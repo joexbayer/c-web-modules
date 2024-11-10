@@ -1,8 +1,12 @@
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include "map.h"
 
 struct map *map_create(size_t initial_capacity) {
+    if (initial_capacity <= 0)
+        return NULL;
+
     struct map *m = malloc(sizeof(struct map));
     if (!m)
     return NULL;
@@ -31,23 +35,23 @@ void map_destroy(struct map *map) {
 }
 
 int map_insert(struct map *map, const char *key, void *value) {
-    if(!map)
+    if (!map)
         return -MAP_ERR;
 
     if (map->size >= map->capacity) {
-        size_t new_capacity = map->capacity * 2;
-        struct map_entry *new_entries = realloc(map->entries, new_capacity * sizeof(struct map_entry));
-        if (!new_entries)
-            return -MAP_ERR;
-        
-        map->entries = new_entries;
-        map->capacity = new_capacity;
+        return -MAP_ERR; // No reallocation, return error if capacity is exceeded
+    }
+
+    for (size_t i = 0; i < map->size; ++i) {
+        if (strcmp(map->entries[i].key, key) == 0) {
+            return 0;
+        }
     }
 
     map->entries[map->size].key = strdup(key);
     if (!map->entries[map->size].key)
         return -MAP_ERR;
-    
+
     map->entries[map->size].value = value;
     map->size++;
     return 0;

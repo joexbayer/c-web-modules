@@ -5,7 +5,7 @@ SRC_DIR = src
 BUILD_DIR = build
 BIN_DIR = bin
 
-CFLAGS = -Wall -Wextra -I$(SRC_DIR)
+CFLAGS = -Wall -Wextra -I$(SRC_DIR) -I./include
 SRCS = $(wildcard $(SRC_DIR)/*.c)
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 
