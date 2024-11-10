@@ -318,7 +318,6 @@ void start_server() {
         char *content_type = strstr(buffer, "Content-Type: ");
         if (content_type && strstr(content_type, "multipart/form-data")) {
             sscanf(content_type, "Content-Type: multipart/form-data; boundary=%99s", boundary);
-            printf("Boundary found: %s\n", boundary);
         }
 
         // Parse body
