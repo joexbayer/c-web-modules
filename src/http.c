@@ -70,6 +70,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
     char *method = strtok(request_copy, " ");
     http_parse_method(method, req);
 
+    /* Check for valid method */
     req->path = strdup(strtok(NULL, " "));
     if (!req->path) {
         perror("Failed to parse path");
@@ -77,6 +78,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
         return;
     }
 
+    /* Check HTTP version */
     char *version = strtok(NULL, "\r\n");
     if (strncmp(version, HTTP_VERSION, strlen(HTTP_VERSION)) != 0) {
         req->method = -1;
@@ -90,12 +92,14 @@ static void http_parse_request(const char *request, struct http_request *req) {
         return;
     }
 
+    /* Parse headers */
     char *line = strtok(NULL, "\r\n");
     while (line && *line != '\0') {
         http_parse_headers(line, req);
         line = strtok(NULL, "\r\n");
     }
 
+    /* Parse query params */
     char *query = strchr(req->path, '?');
     if (query) {
         *query = '\0';
@@ -147,21 +151,19 @@ int http_parse(const char *request, struct http_request *req) {
         return -1;
     }
 
-    printf("Method: %d\n", req->method);
-    printf("Path: %s\n", req->path);
-    printf("Query params:\n");
-    for (size_t i = 0; i < map_size(req->query_params); i++) {
-        const char *key = req->query_params->entries[i].key;
-        const char *value = req->query_params->entries[i].value;
-        printf("  %s: %s\n", key, value);
-    }
-    printf("Headers:\n");
-    for (size_t i = 0; i < map_size(req->headers); i++) {
-        const char *key = req->headers->entries[i].key;
-        const char *value = req->headers->entries[i].value;
-        printf("  %s: %s\n", key, value);
-    }
+    // for (size_t i = 0; i < map_size(req->query_params); i++) {
+    //     const char *key = req->query_params->entries[i].key;
+    //     const char *value = req->query_params->entries[i].value;
+    //     printf("  %s: %s\n", key, value);
+    // }
+    // printf("Headers:\n");
+    // for (size_t i = 0; i < map_size(req->headers); i++) {
+    //     const char *key = req->headers->entries[i].key;
+    //     const char *value = req->headers->entries[i].value;
+    //     printf("  %s: %s\n", key, value);
+    // }
 
+    printf("%s: %s\n", http_methods[req->method], req->path);
 
     return 0;
 }

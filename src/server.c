@@ -121,6 +121,7 @@ void *handle_client(void *arg) {
         read_size += read(c->client_sock, buffer + read_size, sizeof(buffer) - read_size - 1);
         buffer[read_size] = '\0';
     }
+    req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
 
     struct http_response res; 
     res.body = mmap(NULL, HTTP_RESPONSE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
@@ -132,18 +133,21 @@ void *handle_client(void *arg) {
     }
 
     if(strncmp(req.path, "/mgnt", 6) == 0) {
-        mgnt_parse_request(&req);
-        res.status = HTTP_200_OK;
-        snprintf(res.body, HTTP_RESPONSE_SIZE, "Management request received.\n");
+        if(mgnt_parse_request(&req) >= 0) {
+            res.status = HTTP_200_OK;
+            snprintf(res.body, HTTP_RESPONSE_SIZE, "Management request received.\n");
+        } else{
+            res.status = HTTP_500_INTERNAL_SERVER_ERROR;
+            snprintf(res.body, HTTP_RESPONSE_SIZE, "Management request failed.\n");
+        }
+
     } else {
         gateway(&req, &res);
     }
 
-    printf("Finished processing request.\n");
-
+    /* TODO: add headers */
     char response[30000] = {0};
     sprintf(response, "HTTP/1.1 %s\r\nContent-Length: %ld\r\n\r\n%s", http_errors[res.status], strlen(res.body), res.body);
-    printf("Response: %s\n", response);
     write(c->client_sock, response, strlen(response));
 
     close(c->client_sock);

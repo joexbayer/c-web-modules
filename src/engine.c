@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "http.h"
 #include "router.h"
 
@@ -11,6 +12,10 @@
 #include <sys/wait.h>
 #include <setjmp.h>
 
+#ifdef __linux__
+#include <sched.h>   // For unshare() and namespace flags like CLONE_NEWUTS, CLONE_NEWNS, etc.
+#endif
+
 #define SANDBOX_DIR "./tmp"
 #define SHARED_MEM_SIZE HTTP_RESPONSE_SIZE
 
@@ -23,7 +28,6 @@ void segfault_handler(int sig, siginfo_t *info, void *ucontext) {
 }
 
 void safe_execute_handler(handler_t handler, struct http_request *req, struct http_response *res) {
-    
     pid_t pid = fork();
     if (pid < 0) {
         perror("Fork failed");
@@ -34,6 +38,13 @@ void safe_execute_handler(handler_t handler, struct http_request *req, struct ht
     }
 
     if (pid == 0) {
+#ifdef __linux__
+        /* Unshare namespaces - Only on linux. */
+         if (unshare(CLONE_NEWPID | CLONE_NEWNET) != 0) {
+            perror("Failed to unshare namespaces");
+            exit(EXIT_FAILURE);
+        }
+#endif
         if (chroot(SANDBOX_DIR) != 0 || chdir("/") != 0) {
             perror("Failed to set up chroot sandbox");
             exit(EXIT_FAILURE);
@@ -55,8 +66,9 @@ void safe_execute_handler(handler_t handler, struct http_request *req, struct ht
         }
 
         if (sigsetjmp(jump_buffer, 1) == 0) {
+            
             handler(req, res);
-            printf("Handler executed successfully\n");
+            
             exit(0);
         } else {
             snprintf(res->body, SHARED_MEM_SIZE, "Handler execution failed: Segmentation fault.\n");

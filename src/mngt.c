@@ -51,11 +51,10 @@ int write_and_compile(const char *filename, const char *code) {
     fprintf(fp, "%s", code);
     fclose(fp);
 
-    /* Compile code as a shared .so file */
     char command[512];
     snprintf(command, sizeof(command), "gcc -fPIC -L./libs -lmap -shared -I./include -o %s %s", so_path, source_path);
     if (system(command) != 0) {
-        fprintf(stderr, "Compilation failed for %s\n", source_path);
+        fprintf(stderr, "Compilation failed for %s -> %s\n", source_path, so_path);
         unlink(source_path);
         return -1;
     }
@@ -182,18 +181,10 @@ int mgnt_parse_request(struct http_request *req) {
         return -1;
     }
 
-    printf("Boundary: %s\n", boundary);
-    printf("Body: %s\n", req->body);
-
     struct map *form_data = map_create(10);
     if (extract_multipart_form_data(req->body, boundary, form_data) != 0) {
         return -1;
     }
-
-    for (size_t i = 0; i < form_data->size; i++) {
-        printf("Key: %s, Value: %s\n", form_data->entries[i].key, (char *)form_data->entries[i].value);
-    }
-
     mgnt_register_route(map_get(form_data, "route"), map_get(form_data, "code"), map_get(form_data, "function_name"));
 
     return 0;

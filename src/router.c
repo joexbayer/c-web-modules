@@ -18,6 +18,18 @@ struct route* route_find(const char *route) {
 
 static int load_shared_object(struct route *r, const char *so_path, const char *func) {
     dbgprint("Loading shared object: %s\n", so_path);
+    if (setenv("LD_LIBRARY_PATH", "./libs", 1) != 0) {
+        fprintf(stderr, "Failed to set LD_LIBRARY_PATH\n");
+        return -1;
+    }
+
+    /* Load libmap.so dependency - Only needed for Linux, perhaps wrap in #ifdef */
+    void *map_handle = dlopen("./libs/libmap.so", RTLD_GLOBAL | RTLD_LAZY);
+    if (!map_handle) {
+        fprintf(stderr, "Error loading dependency libmap: %s\n", dlerror());
+        return -1;
+    }
+
     r->handle = dlopen(so_path, RTLD_LAZY);
     if (!r->handle) {
         fprintf(stderr, "Error loading shared object: %s\n", dlerror());

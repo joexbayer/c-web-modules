@@ -10,6 +10,7 @@ curl -X POST "http://localhost:8080/mgnt" \
 ```
 
 ## TODO:
+cgroups?
 Add METHOD, libs to a post.
 Single header for functions.
 Manage .so files better...
@@ -54,5 +55,10 @@ isolated_function();
 // Clean up seccomp
 seccomp_release(ctx);
 
+```
+
+```bash
+sudo apt-get update
+sudo apt-get install libseccomp-dev
 ```
 
