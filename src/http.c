@@ -4,14 +4,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-static void http_parse_request(const char *request, struct http_request *req) {
-    char *request_copy = strdup(request);
-    if (!request_copy) {
-        perror("Failed to allocate request copy");
-        return;
-    }
+const char *http_methods[] = {"GET", "POST", "PUT", "DELETE"};
+const char *http_errors[] = {"200 OK", "400 Bad Request", "403 Forbidden", "404 Not Found", "500 Internal Server Error"};
 
-    char *method = strtok(request_copy, " ");
+static void http_parse_method(const char *method, struct http_request *req) {
     if (strncmp(method, "GET", 3) == 0) {
         req->method = HTTP_GET;
     } else if (strncmp(method, "POST", 4) == 0) {
@@ -23,6 +19,56 @@ static void http_parse_request(const char *request, struct http_request *req) {
     } else {
         req->method = -1;
     }
+}
+
+static void http_parse_headers(char *line, struct http_request *req) {
+    while (line) {
+        char *colon = strchr(line, ':');
+        if (colon) {
+            *colon = '\0';
+            char *key = line;
+            char *value = colon + 1;
+            while (*value == ' ') value++; /* Skip leading spaces */
+            map_insert(req->headers, strdup(key), strdup(value));
+        }
+        line = strtok(NULL, "\r\n");
+    }
+}
+
+static void http_parse_query_params(char *query, struct http_request *req) {
+    char *param = strtok(query, "&");
+    while (param) {
+        char *key = strtok(param, "=");
+        char *value = strtok(NULL, "");
+        if (key && value) {
+            map_insert(req->query_params, strdup(key), strdup(value));
+        }
+        param = strtok(NULL, "&");
+    }
+}
+
+static void http_parse_body(const char *request, struct http_request *req) {
+    char *body = strstr(request, "\r\n\r\n");
+    if (body) {
+        body += 4; /* Skip past the "\r\n\r\n" */
+        req->body = strdup(body);
+        if (!req->body) {
+            perror("Failed to allocate body");
+        }
+    } else {
+        req->body = NULL;
+    }
+}
+
+static void http_parse_request(const char *request, struct http_request *req) {
+    char *request_copy = strdup(request);
+    if (!request_copy) {
+        perror("Failed to allocate request copy");
+        return;
+    }
+
+    char *method = strtok(request_copy, " ");
+    http_parse_method(method, req);
 
     req->path = strdup(strtok(NULL, " "));
     if (!req->path) {
@@ -45,16 +91,8 @@ static void http_parse_request(const char *request, struct http_request *req) {
     }
 
     char *line = strtok(NULL, "\r\n");
-    while (line) {
-        printf("Line: %s\n", line);
-        char *colon = strchr(line, ':');
-        if (colon) {
-            *colon = '\0';
-            char *key = line;
-            char *value = colon + 1;
-            while (*value == ' ') value++; // Skip leading spaces
-            map_insert(req->headers, strdup(key), strdup(value));
-        }
+    while (line && *line != '\0') {
+        http_parse_headers(line, req);
         line = strtok(NULL, "\r\n");
     }
 
@@ -62,26 +100,16 @@ static void http_parse_request(const char *request, struct http_request *req) {
     if (query) {
         *query = '\0';
         query++;
-        char *param = strtok(query, "&");
-        while (param) {
-            char *key = strtok(param, "=");
-            char *value = strtok(NULL, "");
-            if (key && value) {
-                map_insert(req->query_params, strdup(key), strdup(value));
-            }
-            param = strtok(NULL, "&");
-        }
+        http_parse_query_params(query, req);
     }
 
-    char *body = strstr(request, "\r\n\r\n");
-    if (body) {
-        body += 4; // Skip past the "\r\n\r\n"
-        req->body = strdup(body);
-        if (!req->body) {
-            perror("Failed to allocate body");
-        }
+    http_parse_body(request, req);
+
+    char *content_length_str = map_get(req->headers, "Content-Length");
+    if (content_length_str) {
+        req->content_length = atoi(content_length_str);
     } else {
-        req->body = NULL;
+        req->content_length = 0;
     }
 
     free(request_copy);

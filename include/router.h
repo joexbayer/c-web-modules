@@ -19,4 +19,15 @@ struct route {
 int route_register(const char *route, const char *so_path, const char *func);
 struct route* route_find(const char *route);
 
+/* TODO: Move... */
+int mgnt_register_route(char* route, char* code, char* func_name);
+int mgnt_parse_request(struct http_request *req);
+void safe_execute_handler(void (*handler)(struct http_request *req, struct http_response *res), struct http_request *req, struct http_response *res);
+
+typedef void (*handler_t)(struct http_request *, struct http_response *);
+
+#define dbgprint(fmt, ...) \
+    do { fprintf(stderr, fmt, __VA_ARGS__); } while (0)
+
+
 #endif // ROUTER_H

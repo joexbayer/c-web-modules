@@ -1,3 +1,7 @@
-server_url=http://localhost:8080/register
-route=/route1 function_name=func1 code=func1.c
-#route=/route2 function_name=func2 code=func2.c
+# Example configuration file
+
+## Server
+server_url=http://localhost:8080/mgnt
+
+## Routes
+route=/route2 function_name=func2 code=func2.c method=GET
