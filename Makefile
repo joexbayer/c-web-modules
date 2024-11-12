@@ -9,7 +9,7 @@ CFLAGS = -Wall -Wextra -I$(SRC_DIR) -I./include -pthread -fsanitize=thread,undef
 SRCS = $(wildcard $(SRC_DIR)/*.c)
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 
-TARGET = $(BIN_DIR)/my_program
+TARGET = $(BIN_DIR)/cweb
 
 # Library
 LIB_DIR = libs
@@ -27,12 +27,6 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-clean:
-	rm -rf $(BUILD_DIR) $(BIN_DIR)
-
-run: $(TARGET)
-	$(TARGET)
-
 $(LIB_TARGET): $(LIB_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) -I./include -fPIC -shared -o $@ $^
@@ -40,5 +34,12 @@ $(LIB_TARGET): $(LIB_OBJS)
 $(BUILD_DIR)/%.o: $(LIB_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
+
+clean:
+	rm -rf $(BUILD_DIR) $(BIN_DIR)
+
+run: $(TARGET)
+	$(TARGET)
+
 
 .PHONY: all clean run

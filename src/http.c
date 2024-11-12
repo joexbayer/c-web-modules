@@ -5,7 +5,15 @@
 #include <stdio.h>
 
 const char *http_methods[] = {"GET", "POST", "PUT", "DELETE"};
-const char *http_errors[] = {"200 OK", "400 Bad Request", "403 Forbidden", "404 Not Found", "500 Internal Server Error"};
+const char *http_errors[] = {"200 OK", "302 Found", "400 Bad Request", "403 Forbidden", "404 Not Found", "500 Internal Server Error"};
+
+/* Helper function to trim trailing whitespace */
+static void trim_trailing_whitespace(char *str) {
+    int len = strlen(str);
+    while (len > 0 && (str[len - 1] == '\r' || str[len - 1] == '\n' || isspace((unsigned char)str[len - 1]))) {
+        str[--len] = '\0';
+    }
+}
 
 static void http_parse_method(const char *method, struct http_request *req) {
     if (strncmp(method, "GET", 3) == 0) {
@@ -35,13 +43,13 @@ static void http_parse_headers(char *line, struct http_request *req) {
     }
 }
 
-static void http_parse_query_params(char *query, struct http_request *req) {
+static void http_parse_params(char *query, struct http_request *req) {
     char *param = strtok(query, "&");
     while (param) {
         char *key = strtok(param, "=");
         char *value = strtok(NULL, "");
         if (key && value) {
-            map_insert(req->query_params, strdup(key), strdup(value));
+            map_insert(req->params, strdup(key), strdup(value));
         }
         param = strtok(NULL, "&");
     }
@@ -85,8 +93,8 @@ static void http_parse_request(const char *request, struct http_request *req) {
     }
 
     req->headers = map_create(10);
-    req->query_params = map_create(10);
-    if (!req->headers || !req->query_params) {
+    req->params = map_create(10);
+    if (!req->headers || !req->params) {
         perror("Failed to create map");
         free(request_copy);
         return;
@@ -104,7 +112,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
     if (query) {
         *query = '\0';
         query++;
-        http_parse_query_params(query, req);
+        http_parse_params(query, req);
     }
 
     http_parse_body(request, req);
@@ -145,15 +153,136 @@ static void http_send_response(int client_fd, struct http_response *res) {
     dprintf(client_fd, "HTTP/1.1 %s\r\nContent-Length: %lu\r\n\r\n%s", status, strlen(res->body), res->body);
 }
 
+static int http_parse_content_type(const struct http_request *req, char **boundary) {
+    const char *content_type = map_get(req->headers, "Content-Type");
+    if (content_type == NULL) {
+        fprintf(stderr, "Content-Type header not found\n");
+        return -1;
+    }
+
+
+    const char *boundary_prefix = "boundary=";
+    *boundary = strstr(content_type, boundary_prefix);
+    if (*boundary == NULL) {
+        fprintf(stderr, "Boundary not found in Content-Type header\n");
+        return -1;
+    }
+
+    *boundary += strlen(boundary_prefix);
+    if (**boundary == '\0') {
+        fprintf(stderr, "Boundary value is empty\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * Extract form data from body
+ * Multiple form fields are separated by boundary
+ * @param body Request body
+ * @param boundary Boundary string
+ * @param form_data Map to store form data   
+ */
+static int http_extract_multipart_form_data(const char *body, const char *boundary, struct map *form_data) {
+    char *boundary_start = strstr(body, boundary);
+    if (boundary_start == NULL) {
+        fprintf(stderr, "Boundary not found in body\n");
+        return -1;
+    }
+
+    char *boundary_end = strstr(boundary_start, boundary);
+    if (boundary_end == NULL) {
+        fprintf(stderr, "Boundary end not found in body\n");
+        return -1;
+    }
+
+    while (boundary_start != NULL) {
+        boundary_start += strlen(boundary);
+        if (strncmp(boundary_start, "--", 2) == 0) break;
+
+        /* Find Content-Disposition */
+        char *content_disposition = strstr(boundary_start, "Content-Disposition: form-data; name=\"");
+        if (content_disposition == NULL) break;
+
+        /* Extract field name */
+        content_disposition += strlen("Content-Disposition: form-data; name=\"");
+        char field_name[50];
+        sscanf(content_disposition, "%49[^\"]", field_name);
+
+        /* Extract value */
+        char *value_start = strstr(content_disposition, "\r\n\r\n");
+        if (value_start == NULL) break;
+        value_start += 4;
+
+        char *value_end = strstr(value_start, boundary);
+        if (value_end == NULL) break;
+        value_end -= 2;
+
+        char *value = (char *)malloc(value_end - value_start + 1);
+        if (value == NULL) {
+            perror("Error allocating memory");
+            return -1;
+        }
+
+        strncpy(value, value_start, value_end - value_start);
+        value[value_end - value_start] = '\0';
+
+        trim_trailing_whitespace(value);
+
+        map_insert(form_data, field_name, value);
+
+        boundary_start = strstr(value_end, boundary);
+    }
+
+    return 0;
+}
+
+int http_parse_data(struct http_request *req) {
+    req->data = map_create(10);
+    char* content_type = map_get(req->headers, "Content-Type");
+    if (content_type && strstr(content_type, "multipart/form-data")) {
+        char *boundary = NULL;
+        if (http_parse_content_type(req, &boundary) == 0) {
+            if (http_extract_multipart_form_data(req->body, boundary, req->data) != 0) {
+                fprintf(stderr, "Failed to extract multipart form data\n");
+                return -1;
+            }
+        }
+    }
+
+    if(content_type && strstr(content_type, "application/x-www-form-urlencoded")) {
+        char *body_copy = strdup(req->body);
+        if (!body_copy) {
+            perror("Failed to allocate body copy");
+            return -1;
+        }
+
+        char *param = strtok(body_copy, "&");
+        while (param) {
+            char *key = strtok(param, "=");
+            char *value = strtok(NULL, "");
+            if (key && value) {
+            map_insert(req->data, strdup(key), strdup(value));
+            }
+            param = strtok(NULL, "&");
+        }
+
+        free(body_copy);
+    }
+
+    return 0;
+}
+
 int http_parse(const char *request, struct http_request *req) {
     http_parse_request(request, req);
     if (req->method == -1) {
         return -1;
     }
 
-    // for (size_t i = 0; i < map_size(req->query_params); i++) {
-    //     const char *key = req->query_params->entries[i].key;
-    //     const char *value = req->query_params->entries[i].value;
+    // for (size_t i = 0; i < map_size(req->params); i++) {
+    //     const char *key = req->params->entries[i].key;
+    //     const char *value = req->params->entries[i].value;
     //     printf("  %s: %s\n", key, value);
     // }
     // printf("Headers:\n");
@@ -162,8 +291,5 @@ int http_parse(const char *request, struct http_request *req) {
     //     const char *value = req->headers->entries[i].value;
     //     printf("  %s: %s\n", key, value);
     // }
-
-    printf("%s: %s\n", http_methods[req->method], req->path);
-
     return 0;
 }

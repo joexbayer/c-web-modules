@@ -1,7 +1,0 @@
-# Example configuration file
-
-## Server
-server_url=http://localhost:8080/mgnt
-
-## Routes
-route=/route2 function_name=func2 code=func2.c method=GET

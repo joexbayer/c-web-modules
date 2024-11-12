@@ -16,6 +16,7 @@
 #include "http.h"
 #include "router.h"
 #include "cweb.h"
+#include "map.h"
 
 struct server {
     int server_fd;
@@ -89,7 +90,7 @@ static int gateway(struct http_request *req, struct http_response *res) {
         return 0;
     }
 
-    struct route *r = route_find(req->path);
+    struct route *r = route_find(req->path, http_methods[req->method]);
     if (r) {
         safe_execute_handler(r->handler, req, res);
     } else {
@@ -101,10 +102,13 @@ static int gateway(struct http_request *req, struct http_response *res) {
 
 
 void *handle_client(void *arg) {
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    
     struct client *c = (struct client *)arg;
 
     /* Read in HTTP header */
-    char buffer[30000] = {0};
+    char buffer[8*1024] = {0};
     int read_size = read(c->client_sock, buffer, sizeof(buffer) - 1);
     if (read_size <= 0) {
         close(c->client_sock);
@@ -114,6 +118,8 @@ void *handle_client(void *arg) {
     buffer[read_size] = '\0';
 
     struct http_request req;
+    /* store threadid */
+    req.tid = pthread_self();
     http_parse(buffer, &req);
 
     /* Make sure entire request is read. TODO: Cant do this for huge requests.. */
@@ -123,7 +129,17 @@ void *handle_client(void *arg) {
     }
     req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
 
-    struct http_response res; 
+    http_parse_data(&req);
+
+    struct http_response res;
+    res.headers = map_create(10);
+    if (res.headers == NULL) {
+        perror("Error creating map");
+        close(c->client_sock);
+        free(c);
+        return NULL;
+    }
+
     res.body = mmap(NULL, HTTP_RESPONSE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (res.body == MAP_FAILED) {
         perror("Error allocating shared memory");
@@ -146,22 +162,41 @@ void *handle_client(void *arg) {
     }
 
     /* TODO: add headers */
+    char headers[4*1024] = {0};
+    struct map *headers_map = res.headers;
+    for (size_t i = 0; i < map_size(headers_map); i++) {
+        const char *key = headers_map->entries[i].key;
+        const char *value = headers_map->entries[i].value;
+        snprintf(headers + strlen(headers), sizeof(headers) - strlen(headers), "%s: %s\r\n", key, value);
+    }
+    
     char response[30000] = {0};
-    sprintf(response, "HTTP/1.1 %s\r\nContent-Length: %ld\r\n\r\n%s", http_errors[res.status], strlen(res.body), res.body);
+    snprintf(response, sizeof(response), "HTTP/1.1 %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
     write(c->client_sock, response, strlen(response));
 
+
+    if(req.body) free(req.body);
+    map_destroy(req.params);
+    map_destroy(req.headers);
+    map_destroy(req.data);
+    map_destroy(res.headers);
     close(c->client_sock);
     munmap(res.body, HTTP_RESPONSE_SIZE); 
     free(c);
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double time_taken = (end.tv_sec - start.tv_sec) * 1e9;
+    time_taken = (time_taken + (end.tv_nsec - start.tv_nsec)) * 1e-9;
+    printf("[%ld] Request %s %s took %f seconds\n", req.tid, http_methods[req.method], req.path, time_taken);
     return NULL;
 }
 
-int main() {
-    mgnt_register_route("/hello", "#include <stdio.h>\nvoid hello() { printf(\"Hello, World!\\n\"); }", "hello");
 
+int main() {
     struct server s = server_init(8080);
     
-    while (1) {
+    mgnt_register_route("/hello", "#include <stdio.h>\nvoid hello() { printf(\"Hello, World!\\n\"); }", "hello", "GET");
+    while(1){
         struct client *client = server_accept(s);
         if (client == NULL) {
             perror("Error accepting client");
@@ -178,7 +213,8 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
-        pthread_detach(thread);
+        pthread_detach(thread); 
     }
+
     return 0;
 }

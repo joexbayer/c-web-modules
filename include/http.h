@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <pthread.h>
+#include <ctype.h>
 
 #define HTTP_VERSION "HTTP/1.1"
 #define HTTP_RESPONSE_SIZE 8*1024
@@ -18,6 +20,7 @@ extern const char *http_methods[];
 
 typedef enum http_error {
     HTTP_200_OK,
+    HTTP_302_FOUND,
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
     HTTP_404_NOT_FOUND,
@@ -30,15 +33,19 @@ struct http_request {
     char *path;
     char *body;
     int content_length;
-    struct map *query_params;
+    pthread_t tid;
+    struct map *params;
     struct map *headers;
+    struct map *data;
 };
 
 struct http_response {
     http_error_t status;
+    struct map *headers;
     char *body;
 };
 
 int http_parse(const char *request, struct http_request *req);
+int http_parse_data(struct http_request *req);  
 
 #endif // HTTP_H
