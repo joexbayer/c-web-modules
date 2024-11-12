@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "http.h"
-#include "map.h"
+
+#include <cweb.h>
 
 #define MAX_ITEMS 10
 
@@ -10,8 +10,6 @@ static const char* list[MAX_ITEMS];
 static int list_count = 0;
 
 const char* head = 
-    "<meta charset=\"UTF-8\">\n"
-    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
     "<title>CWeb</title>\n"
     "<link rel=\"stylesheet\" href=\"https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css\">\n";
 
@@ -39,7 +37,8 @@ const char* home_template =
     "  </body>\n"
     "</html>\n";
 
-void render_todo_list(char *buffer, size_t buffer_size) {
+/* Helper */
+static void render_todo_list(char *buffer, size_t buffer_size) {
     char items_buffer[1024] = "";
 
     for (int i = 0; i < list_count; i++) {
@@ -51,6 +50,7 @@ void render_todo_list(char *buffer, size_t buffer_size) {
     snprintf(buffer, buffer_size, todo_template, items_buffer);
 }
 
+/* Route: / - Method GET */
 int index_route(struct http_request *req, struct http_response *res) {
     char content[2048];
     char rendered_page[4096];
@@ -61,9 +61,14 @@ int index_route(struct http_request *req, struct http_response *res) {
 
     res->status = HTTP_200_OK;
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", rendered_page);
+    
+    map_insert(res->headers, "Content-Type", "text/html");
+    map_insert(res->headers, "x-custom-header", "Hello, World!");
+
     return 0;
 }
 
+/* Route: /add - Method POST */
 int add_todo_route(struct http_request *req, struct http_response *res) {
     if (list_count >= MAX_ITEMS) {
         res->status = HTTP_400_BAD_REQUEST;
@@ -80,3 +85,11 @@ int add_todo_route(struct http_request *req, struct http_response *res) {
     map_insert(res->headers, "Location", "/");
     return 0;
 }
+
+const routes_t routes = {
+    .routes = {
+        {"/", HTTP_GET, index_route},
+        {"/add", HTTP_POST, add_todo_route},
+    },
+    .size = 2,
+};

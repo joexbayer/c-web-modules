@@ -17,10 +17,11 @@ struct route* route_find(const char *route, const char *method) {
 }
 
 static int load_shared_object(struct route *r, const char *so_path, const char *func) {
+    /* Check if routes .so file is already loaded */
     for (int i = 0; i < route_count; i++) {
         if (strcmp(routes[i].so_path, so_path) == 0 && routes[i].loaded) {
             r->handle = routes[i].handle;
-            r->handler = (void (*)(struct http_request *, struct http_response *))dlsym(r->handle, func);
+            r->handler = (handler_t)dlsym(r->handle, func);
             if (!r->handler) {
                 fprintf(stderr, "Error finding existing function '%s': %s\n", func, dlerror());
                 dlclose(r->handle);
@@ -29,12 +30,6 @@ static int load_shared_object(struct route *r, const char *so_path, const char *
             printf("Route '%s' already loaded.\n", r->route);
             return 0;
         }
-    }
-
-    dbgprint("Loading shared object: %s\n", so_path);
-    if (setenv("LD_LIBRARY_PATH", "./libs", 1) != 0) {
-        fprintf(stderr, "Failed to set LD_LIBRARY_PATH\n");
-        return -1;
     }
 
     /* Load libmap.so dependency - Only needed for Linux, perhaps wrap in #ifdef */
@@ -49,6 +44,7 @@ static int load_shared_object(struct route *r, const char *so_path, const char *
         fprintf(stderr, "Error loading shared object: %s\n", dlerror());
         return -1;
     }
+
     r->handler = (void (*)(struct http_request *, struct http_response *))dlsym(r->handle, func);
     if (!r->handler) {
         fprintf(stderr, "Error finding function '%s': %s\n", func, dlerror());
@@ -61,18 +57,23 @@ static int load_shared_object(struct route *r, const char *so_path, const char *
     return 0;
 }
 
-static void update_route(struct route *r, const char *so_path, const char *func) {
+static int update_route(struct route *r, const char *so_path, const char *func) {
+    /* Unload all routes to depdent on current .so file */
     for (int i = 0; i < route_count; i++) {
         if (strcmp(routes[i].so_path, so_path) == 0) {
             routes[i].loaded = 0;
         }
     }
     r->loaded = 0;
+    
     dlclose(r->handle);
     strncpy(r->so_path, so_path, sizeof(r->so_path));
     if (load_shared_object(r, so_path, func) == 0) {
         printf("Route '%s' overwritten successfully.\n", r->route);
+        return 0;
     }
+
+    return -1;
 }
 
 static int add_route(const char *route, const char *so_path, const char *func, const char *method) {
@@ -96,13 +97,81 @@ static int add_route(const char *route, const char *so_path, const char *func, c
     return -1;
 }
 
+static int load_routes_from_disk(const char *filename) {
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        perror("Error opening file for reading");
+        return -1;
+    }
+
+    struct route_disk_header header;
+    if (fread(&header, sizeof(header), 1, file) != 1) {
+        perror("Error reading header from file");
+        fclose(file);
+        return -1;
+    }
+
+    if (strcmp(header.magic, "RTS") != 0) {
+        fprintf(stderr, "Invalid file format\n");
+        fclose(file);
+        return -1;
+    }
+
+    for (int i = 0; i < header.count; i++) {
+        struct route_disk rd;
+        if (fread(&rd, sizeof(rd), 1, file) != 1) {
+            perror("Error reading route from file");
+            fclose(file);
+            return -1;
+        }
+        add_route(rd.route, rd.so_path, rd.func, rd.method);
+    }
+
+    fclose(file);
+    return 0;
+}
+
+static int save_routes_to_disk(const char *filename) {
+    FILE *file = fopen(filename, "wb");
+    if (!file) {
+        perror("Error opening file for writing");
+        return -1;
+    }
+
+    struct route_disk_header header = { "RTS", route_count };
+    if (fwrite(&header, sizeof(header), 1, file) != 1) {
+        perror("Error writing header to file");
+        fclose(file);
+        return -1;
+    }
+
+    for (int i = 0; i < route_count; i++) {
+        struct route_disk rd;
+        strncpy(rd.route, routes[i].route, sizeof(rd.route));
+        strncpy(rd.so_path, routes[i].so_path, sizeof(rd.so_path));
+        strncpy(rd.func, routes[i].func, sizeof(rd.func));
+        strncpy(rd.method, routes[i].method, sizeof(rd.method));
+
+        if (fwrite(&rd, sizeof(rd), 1, file) != 1) {
+            perror("Error writing route to file");
+            fclose(file);
+            return -1;
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
+
 int route_register(const char *route, const char *so_path, const char *func, const char *method) {
     struct route *r = route_find(route, method);
     if (r) {
-        update_route(r, so_path, func);
-        return 0;
+        return update_route(r, so_path, func);
     }
-    return add_route(route, so_path, func, method);
+
+    int ret = add_route(route, so_path, func, method);
+    save_routes_to_disk("routes.dat");
+    return ret;
 }
 
 void route_cleanup() {
@@ -112,6 +181,6 @@ void route_cleanup() {
     }
 }
 
-int route_init(){
-    
-}
+void route_init() {
+    load_routes_from_disk("routes.dat");
+}   

@@ -11,6 +11,7 @@
 #define HTTP_RESPONSE_SIZE 8*1024
 
 typedef enum http_method {
+    HTTP_ERR = -1,
     HTTP_GET,
     HTTP_POST,
     HTTP_PUT,

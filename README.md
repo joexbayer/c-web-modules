@@ -1,5 +1,14 @@
 # c-web-functions
 
+## Dependecies
+```bash
+sudo apt-get install libssl-dev
+
+# Create certificate
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365
+
+```
+
 ## Deploy
 ```bash
 curl -X POST "http://localhost:8080/mgnt" \
@@ -10,6 +19,8 @@ curl -X POST "http://localhost:8080/mgnt" \
 ```
 
 ## TODO:
+authorization
+sessions (cookies)
 mounted filesystem files.
 cgroups?
 Add METHOD, libs to a post.

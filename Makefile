@@ -5,8 +5,8 @@ SRC_DIR = src
 BUILD_DIR = build
 BIN_DIR = bin
 
-CFLAGS = -Wall -Wextra -I$(SRC_DIR) -I./include -pthread -fsanitize=thread,undefined -g
-SRCS = $(wildcard $(SRC_DIR)/*.c)
+CFLAGS = -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -fsanitize=thread,undefined -g -lssl -lcrypto
+SRCS = $(wildcard $(SRC_DIR)/*.c) 
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 
 TARGET = $(BIN_DIR)/cweb

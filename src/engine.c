@@ -20,6 +20,7 @@ static sigjmp_buf jump_buffer;
 
 /* Signal handler for segmentation faults */
 void segfault_handler(int sig, siginfo_t *info, void *ucontext) {
+    (void)ucontext;
     fprintf(stderr, "Segmentation fault detected in handler execution. Signal %d received at address %p.\n", sig, info->si_addr);
     siglongjmp(jump_buffer, 1);
 }

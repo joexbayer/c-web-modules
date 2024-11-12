@@ -91,21 +91,38 @@ static int gateway(struct http_request *req, struct http_response *res) {
     }
 
     struct route *r = route_find(req->path, http_methods[req->method]);
-    if (r) {
-        safe_execute_handler(r->handler, req, res);
-    } else {
+    if (!r) {
         res->status = HTTP_404_NOT_FOUND;
         snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n"); 
+        return 0;
     }
+    
+    safe_execute_handler(r->handler, req, res);
     return 0;
 }
 
+static void build_headers(struct http_response *res, char *headers, int headers_size) {
+    struct map *headers_map = res->headers;
+    int headers_len = 0;
+    for (size_t i = 0; i < map_size(headers_map); i++) {
+        const char *key = headers_map->entries[i].key;
+        const char *value = headers_map->entries[i].value;
 
-void *handle_client(void *arg) {
+        int written = snprintf(headers + headers_len, headers_size - headers_len, "%s: %s\r\n", key, value);
+        if (written < 0 || written >= headers_size - headers_len) {
+            fprintf(stderr, "Header buffer overflow\n");
+            break;
+        }
+        headers_len += written;
+    }
+}
+
+static void *thread_handle_client(void *arg) {
+    struct client *c = (struct client *)arg;
+
+    /* Measure time */
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
-    
-    struct client *c = (struct client *)arg;
 
     /* Read in HTTP header */
     char buffer[8*1024] = {0};
@@ -118,8 +135,7 @@ void *handle_client(void *arg) {
     buffer[read_size] = '\0';
 
     struct http_request req;
-    /* store threadid */
-    req.tid = pthread_self();
+    req.tid = pthread_self(); /* store threadid */
     http_parse(buffer, &req);
 
     /* Make sure entire request is read. TODO: Cant do this for huge requests.. */
@@ -129,8 +145,10 @@ void *handle_client(void *arg) {
     }
     req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
 
+    /* Parse potential data in the body (like form data) */
     http_parse_data(&req);
 
+    /* Prepare response */
     struct http_response res;
     res.headers = map_create(10);
     if (res.headers == NULL) {
@@ -140,6 +158,7 @@ void *handle_client(void *arg) {
         return NULL;
     }
 
+    /* Memory allocated for body with mmap to be able to share between proccesses (currently not used.) */
     res.body = mmap(NULL, HTTP_RESPONSE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (res.body == MAP_FAILED) {
         perror("Error allocating shared memory");
@@ -148,6 +167,7 @@ void *handle_client(void *arg) {
         return NULL;
     }
 
+    /* Handle management requests */
     if(strncmp(req.path, "/mgnt", 6) == 0) {
         if(mgnt_parse_request(&req) >= 0) {
             res.status = HTTP_200_OK;
@@ -156,25 +176,19 @@ void *handle_client(void *arg) {
             res.status = HTTP_500_INTERNAL_SERVER_ERROR;
             snprintf(res.body, HTTP_RESPONSE_SIZE, "Management request failed.\n");
         }
-
     } else {
+        /* Handle gateway requests */
         gateway(&req, &res);
     }
 
-    /* TODO: add headers */
     char headers[4*1024] = {0};
-    struct map *headers_map = res.headers;
-    for (size_t i = 0; i < map_size(headers_map); i++) {
-        const char *key = headers_map->entries[i].key;
-        const char *value = headers_map->entries[i].value;
-        snprintf(headers + strlen(headers), sizeof(headers) - strlen(headers), "%s: %s\r\n", key, value);
-    }
+    build_headers(&res, headers, sizeof(headers));
     
-    char response[30000] = {0};
+    char response[8*1024] = {0};
     snprintf(response, sizeof(response), "HTTP/1.1 %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
     write(c->client_sock, response, strlen(response));
 
-
+    /* Clean up */
     if(req.body) free(req.body);
     map_destroy(req.params);
     map_destroy(req.headers);
@@ -187,15 +201,16 @@ void *handle_client(void *arg) {
     clock_gettime(CLOCK_MONOTONIC, &end);
     double time_taken = (end.tv_sec - start.tv_sec) * 1e9;
     time_taken = (time_taken + (end.tv_nsec - start.tv_nsec)) * 1e-9;
+
     printf("[%ld] Request %s %s took %f seconds\n", req.tid, http_methods[req.method], req.path, time_taken);
     return NULL;
 }
 
 
 int main() {
+    route_init();
     struct server s = server_init(8080);
     
-    mgnt_register_route("/hello", "#include <stdio.h>\nvoid hello() { printf(\"Hello, World!\\n\"); }", "hello", "GET");
     while(1){
         struct client *client = server_accept(s);
         if (client == NULL) {
@@ -205,7 +220,7 @@ int main() {
         }
 
         pthread_t thread;
-        if (pthread_create(&thread, NULL, handle_client, client) != 0) {
+        if (pthread_create(&thread, NULL, thread_handle_client, client) != 0) {
             perror("Error creating thread");
             close(s.server_fd);
             close(client->client_sock);

@@ -15,6 +15,7 @@ static void trim_trailing_whitespace(char *str) {
     }
 }
 
+/* Parse HTTP method */
 static void http_parse_method(const char *method, struct http_request *req) {
     if (strncmp(method, "GET", 3) == 0) {
         req->method = HTTP_GET;
@@ -29,6 +30,7 @@ static void http_parse_method(const char *method, struct http_request *req) {
     }
 }
 
+/* Parses HTTP headers and puts them into headers map */
 static void http_parse_headers(char *line, struct http_request *req) {
     while (line) {
         char *colon = strchr(line, ':');
@@ -43,6 +45,7 @@ static void http_parse_headers(char *line, struct http_request *req) {
     }
 }
 
+/* Parses query parameters and puts them into params map */
 static void http_parse_params(char *query, struct http_request *req) {
     char *param = strtok(query, "&");
     while (param) {
@@ -55,6 +58,7 @@ static void http_parse_params(char *query, struct http_request *req) {
     }
 }
 
+/* Allocates and copies request body */
 static void http_parse_body(const char *request, struct http_request *req) {
     char *body = strstr(request, "\r\n\r\n");
     if (body) {
@@ -68,6 +72,7 @@ static void http_parse_body(const char *request, struct http_request *req) {
     }
 }
 
+/* Mainly parses the header of the HTTP request */
 static void http_parse_request(const char *request, struct http_request *req) {
     char *request_copy = strdup(request);
     if (!request_copy) {
@@ -127,32 +132,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
     free(request_copy);
 }
 
-static void http_send_response(int client_fd, struct http_response *res) {
-    const char *status;
-    switch (res->status) {
-        case HTTP_200_OK:
-            status = "200 OK";
-            break;
-        case HTTP_400_BAD_REQUEST:
-            status = "400 Bad Request";
-            break;
-        case HTTP_403_FORBIDDEN:
-            status = "403 Forbidden";
-            break;
-        case HTTP_404_NOT_FOUND:
-            status = "404 Not Found";
-            break;
-        case HTTP_500_INTERNAL_SERVER_ERROR:
-            status = "500 Internal Server Error";
-            break;
-        default:
-            status = "500 Internal Server Error";
-            break;
-    }
-
-    dprintf(client_fd, "HTTP/1.1 %s\r\nContent-Length: %lu\r\n\r\n%s", status, strlen(res->body), res->body);
-}
-
+/* Tries to get boundary if multipart data is present. */
 static int http_parse_content_type(const struct http_request *req, char **boundary) {
     const char *content_type = map_get(req->headers, "Content-Type");
     if (content_type == NULL) {
@@ -238,6 +218,7 @@ static int http_extract_multipart_form_data(const char *body, const char *bounda
     return 0;
 }
 
+/* Parses body data if its either multipart of x-www-form */
 int http_parse_data(struct http_request *req) {
     req->data = map_create(10);
     char* content_type = map_get(req->headers, "Content-Type");

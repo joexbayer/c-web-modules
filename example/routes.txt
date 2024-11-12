@@ -3,10 +3,9 @@
 ## Server
 server_url=http://localhost:8080/mgnt
 
-## Backend Routes
-#route=/route2 function_name=func2 code=backend.c method=GET
-#route=/route3 function_name=func3 code=backend.c method=GET
+## Counter app
+route=/counter function_name=index_route code=counter.c method=GET
 
-## Frontend Routes
-route=/ function_name=index_route code=frontend.c method=GET
-route=/add function_name=add_todo_route code=frontend.c method=POST
+## Todo App
+route=/ function_name=index_route code=todo.c method=GET
+route=/add function_name=add_todo_route code=todo.c method=POST
