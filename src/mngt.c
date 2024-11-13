@@ -12,14 +12,10 @@
 #include <time.h>
 #include <openssl/sha.h>
 
-#define TMP_DIR "./tmp"
+#define TMP_DIR "modules"
 
 /* static prototypes */
 static int write_and_compile(const char *filename, const char *code);
-/* exposed prototypes */
-int mgnt_parse_request(struct http_request *req);
-int mgnt_register_route(char* route, char* code, char* func_name, char* method);
-
 
 /**
  * Write code to a temporary file and compile it to .so
@@ -49,17 +45,17 @@ int write_and_compile(const char *filename, const char *code) {
     }
     unlink(source_path);
 
-    dbgprint("Compilation successful for %s\n", filename);
+    //dbgprint("Compilation successful for %s\n", filename);
     return 0;
 }
 
 /**
  * Hash code to a SHA256 hash
+ * Used to create a unique hash for each code snippet
  * @param code Code to hash
  * @return Hashed code
  */
 static char* hash_code(char* code) {
-
 // Disable deprecation warning for SHA256, probably should fix this...
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -89,9 +85,9 @@ static char* hash_code(char* code) {
  * @param method HTTP method
  * @return 0 on success, -1 on failure
  */
-int mgnt_register_route(char* route, char* code, char* func_name, char* method) {
-    if(route == NULL || code == NULL || func_name == NULL || method == NULL) {
-        fprintf(stderr, "Invalid route registration: route=%s, code=%s, func_name=%s, method=%s\n", route, code, func_name, method);
+static int mgnt_register_module(char* code) {
+    if(code == NULL ) {
+        fprintf(stderr, "Code is NULL\n");
         return -1;
     }
 
@@ -101,17 +97,11 @@ int mgnt_register_route(char* route, char* code, char* func_name, char* method) 
         return -1;
     }
 
-    if (strlen(func_name) > 256) {
-        fprintf(stderr, "Function name '%s' is too long.\n", func_name);
-        return -1;
-    }
-
     char filename[256];
-    //snprintf(filename, sizeof(filename), "%s_%ld", func_name, time(NULL));
     snprintf(filename, sizeof(filename), "%s", hash);
 
     if (write_and_compile(filename, code) != 0) {
-        fprintf(stderr, "Failed to register route '%s' due to compilation error.\n", route);
+        fprintf(stderr, "Failed to register '%s' due to compilation error.\n", filename);
         return -1;
     }
 
@@ -120,7 +110,7 @@ int mgnt_register_route(char* route, char* code, char* func_name, char* method) 
 
     free(hash);
 
-    return route_register(route, so_path, func_name, method);
+    return route_register_module(so_path);
 }
 
 int mgnt_parse_request(struct http_request *req) {
@@ -128,5 +118,5 @@ int mgnt_parse_request(struct http_request *req) {
         return -1;
     }
 
-    return mgnt_register_route(map_get(req->data, "route"), map_get(req->data, "code"), map_get(req->data, "function_name"), map_get(req->data, "method"));;
+    return mgnt_register_module(map_get(req->data, "code"));;
 }

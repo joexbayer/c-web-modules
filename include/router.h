@@ -5,44 +5,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <cweb.h>
 
 #define ROUTE_SIZE 128
 #define ROUTE_COUNT 100
-typedef void (*handler_t)(struct http_request *, struct http_response *);
-
-struct route_disk_header {
-    char magic[4];
-    int count;
-};
-
-struct route_disk {
-    char route[ROUTE_SIZE];
-    char so_path[128];
-    char func[128];
-    char method[128];
-};
-
-struct route {
-    char route[ROUTE_SIZE];
-    char so_path[256];
-    char func[128];
-    char method[128];
-
-    /* Dynamic loading */
+typedef int (*handler_t)(struct http_request *, struct http_response *);
+struct gateway_entry {
     void *handle;
-    handler_t handler;
-    volatile int loaded;
+    char so_path[256];
+    struct module *module;
     pthread_mutex_t mutex;
 };
 
+struct route {
+    struct route_info *route;
+    pthread_mutex_t* mutex;
+};
+
 void route_init();
-int route_register(const char *route, const char *so_path, const char *func, const char *method);
-struct route* route_find(const char *route, const char *method);    
+int route_register_module(char* so_path);
+struct route route_find(char *route, char *method);
 
 /* TODO: Move... */
-int mgnt_register_route(char* route, char* code, char* func_name, char* method);
 int mgnt_parse_request(struct http_request *req);
-void safe_execute_handler(handler_t handler, struct http_request *req, struct http_response *res);\
+void safe_execute_handler(handler_t handler, struct http_request *req, struct http_response *res);
 
 #define dbgprint(fmt, ...) \
     do { fprintf(stderr, fmt, __VA_ARGS__); } while (0)

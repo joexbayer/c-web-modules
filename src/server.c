@@ -90,16 +90,16 @@ static int gateway(struct http_request *req, struct http_response *res) {
         return 0;
     }
 
-    struct route *r = route_find(req->path, http_methods[req->method]);
-    if (!r) {
+    struct route r = route_find(req->path, (char*)http_methods[req->method]);
+    if (r.route == NULL) {
         res->status = HTTP_404_NOT_FOUND;
         snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n"); 
         return 0;
     }
 
-    pthread_mutex_lock(&r->mutex); 
-    safe_execute_handler(r->handler, req, res);
-    pthread_mutex_unlock(&r->mutex);
+    /* At this point we have already locked the route, so we only release it. */
+    safe_execute_handler(r.route->handler, req, res);
+    pthread_mutex_unlock(r.mutex);
     return 0;
 }
 

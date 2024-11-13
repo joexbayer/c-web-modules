@@ -3,192 +3,181 @@
 #include "router.h"
 #include <dlfcn.h>
 #include <unistd.h>
+#include <pthread.h>
 
-struct route routes[100];
-int route_count = 0;
+#define MODULE_TAG "config"
+#define ROUTE_FILE "routes.dat"
 
-struct route* route_find(const char *route, const char *method) {
-    for (int i = 0; i < route_count; i++) {
-        if (strcmp(routes[i].route, route) == 0 && strcmp(routes[i].method, method) == 0) {
-            return &routes[i];
+struct route_disk_header {
+    char magic[5];
+    int count;
+};
+pthread_mutex_t save_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+struct gateway {
+    struct gateway_entry entries[100];
+    int count;
+} gateway = {0};
+
+static int route_save_to_disk(char* filename);
+static int route_load_from_disk(char* filename);
+
+struct route route_find(char *route, char *method) {
+    for (int i = 0; i < gateway.count; i++) {
+
+        pthread_mutex_lock(&gateway.entries[i].mutex);
+        for (int j = 0; j < gateway.entries[i].module->size; j++) {
+            if (strcmp(gateway.entries[i].module->routes[j].path, route) == 0 && strcmp(gateway.entries[i].module->routes[j].method, method) == 0) {
+                /* Caller is responsible for unlocking the mutex! */
+                return (struct route){
+                    .route = &gateway.entries[i].module->routes[j],
+                    .mutex = &gateway.entries[i].mutex
+                };
+            }
         }
+        pthread_mutex_unlock(&gateway.entries[i].mutex);
+
     }
-    return NULL;
+    return (struct route){0};
 }
 
-static int load_shared_object(struct route *r, const char *so_path, const char *func) {
-    /* Check if routes .so file is already loaded */
-    for (int i = 0; i < route_count; i++) {
-        if (strcmp(routes[i].so_path, so_path) == 0 && routes[i].loaded) {
-            r->handle = routes[i].handle;
-            r->handler = (handler_t)dlsym(r->handle, func);
-            if (!r->handler) {
-                fprintf(stderr, "Error finding existing function '%s': %s\n", func, dlerror());
-                dlclose(r->handle);
-                return -1;
+static int update_gateway_entry(int index, char* so_path, struct module* routes, void* handle) {
+    pthread_mutex_lock(&gateway.entries[index].mutex);
+
+    if(gateway.entries[index].handle)
+        dlclose(gateway.entries[index].handle);
+
+    gateway.entries[index].handle = handle;
+    memset(gateway.entries[index].so_path, 0, 256);
+    strcpy(gateway.entries[index].so_path, so_path);
+    gateway.entries[index].module = routes;
+    
+    pthread_mutex_unlock(&gateway.entries[index].mutex);
+    
+    route_save_to_disk(ROUTE_FILE);
+    return 0;
+}
+
+static void* load_shared_object(char* so_path){
+    void* handle = dlopen(so_path, RTLD_LAZY);
+    if (!handle) {
+        fprintf(stderr, "Error loading shared object: %s\n", dlerror());
+        return NULL;
+    }
+    return handle;
+}
+
+static int load_from_shared_object(char* so_path){
+    void* handle = load_shared_object(so_path);
+    if (!handle) {
+        return -1;
+    }
+
+    struct module* module = dlsym(handle, MODULE_TAG);
+    if (!module || module->size == 0 || strnlen(module->name, 128) == 0) {
+        fprintf(stderr, "Error finding module definition: %s\n", dlerror());
+        dlclose(handle);
+        return -1;
+    }
+
+    /* Check if gateway is full */
+    if (gateway.count >= 100) {
+        fprintf(stderr, "Gateway is full\n");
+        dlclose(handle);
+        return -1;
+    }
+
+    /* Check if module already exists */
+    for (int i = 0; i < gateway.count; i++) {
+        if (strcmp(gateway.entries[i].module->name, module->name) == 0) {
+            /* Update existing entry, if so_path differ */
+            if(strcmp(gateway.entries[i].so_path, so_path) == 0) {
+                return 0;
             }
-            printf("Route '%s' already loaded.\n", r->route);
-            return 0;
+
+            return update_gateway_entry(i, so_path, module, handle);
         }
     }
 
-    /* Load libmap.so dependency - Only needed for Linux, perhaps wrap in #ifdef */
-    void *map_handle = dlopen("./libs/libmap.so", RTLD_GLOBAL | RTLD_LAZY);
-    if (!map_handle) {
-        fprintf(stderr, "Error loading dependency libmap: %s\n", dlerror());
-        return -1;
-    }
+    pthread_mutex_init(&gateway.entries[gateway.count].mutex, NULL);
+    update_gateway_entry(gateway.count, so_path, module, handle);
+    gateway.count++;
 
-    r->handle = dlopen(so_path, RTLD_LAZY); 
-    if (!r->handle) {
-        fprintf(stderr, "Error loading shared object: %s\n", dlerror());
-        return -1;
-    }
-
-    r->handler = (void (*)(struct http_request *, struct http_response *))dlsym(r->handle, func);
-    if (!r->handler) {
-        fprintf(stderr, "Error finding function '%s': %s\n", func, dlerror());
-        dlclose(r->handle);
-        return -1;
-    }
-
-    r->loaded = 1;
+    route_save_to_disk(ROUTE_FILE);
 
     return 0;
 }
 
-static int update_route(struct route *r, const char *so_path, const char *func) {
-    pthread_mutex_lock(&r->mutex);
-
-    /* Unload all routes to depdent on current .so file */
-    for (int i = 0; i < route_count; i++) {
-        if (strcmp(routes[i].so_path, so_path) == 0) {
-            pthread_mutex_lock(&routes[i].mutex);
-            routes[i].loaded = 0;
-            dlclose(routes[i].handle);
-            pthread_mutex_unlock(&routes[i].mutex);
-        }
-    }
-    r->loaded = 0;
-    
-    dlclose(r->handle);
-    strncpy(r->so_path, so_path, sizeof(r->so_path));
-    if (load_shared_object(r, so_path, func) == 0) {
-        printf("Route '%s' overwritten successfully.\n", r->route);
-        pthread_mutex_unlock(&r->mutex);
-        return 0;
-    }
-
-    pthread_mutex_unlock(&r->mutex);
-    return -1;
+int route_register_module(char* so_path) {
+    return load_from_shared_object(so_path);
 }
 
-static int add_route(const char *route, const char *so_path, const char *func, const char *method) {
-    if (route_count >= ROUTE_COUNT) {
-        fprintf(stderr, "Route limit reached\n");
+void route_cleanup() {
+    for (int i = 0; i < gateway.count; i++) {
+        pthread_mutex_lock(&gateway.entries[i].mutex);
+        dlclose(gateway.entries[i].handle);
+        pthread_mutex_unlock(&gateway.entries[i].mutex);
+    }
+}
+
+static int route_save_to_disk(char* filename) {
+    pthread_mutex_lock(&save_mutex);
+
+    FILE *fp = fopen(filename, "wb");
+    if (fp == NULL) {
+        perror("Error creating route file");
         return -1;
     }
 
-    strncpy(routes[route_count].route, route, sizeof(routes[route_count].route));
-    strncpy(routes[route_count].so_path, so_path, sizeof(routes[route_count].so_path));
-    strncpy(routes[route_count].func, func, sizeof(routes[route_count].func));
-    strncpy(routes[route_count].method, method, sizeof(routes[route_count].method));
-    
-    routes[route_count].loaded = 0;
-    pthread_mutex_init(&routes[route_count].mutex, NULL);
+    struct route_disk_header header = {
+        .magic = "CWEB",
+        .count = gateway.count
+    };
+    fwrite(&header, sizeof(struct route_disk_header), 1, fp);
 
-    if (load_shared_object(&routes[route_count], so_path, func) == 0) {
-        route_count++;
-        printf("Route '%s' registered successfully.\n", route);
-        return 0;
+    for (int i = 0; i < gateway.count; i++) {
+        fwrite(gateway.entries[i].so_path, 128, 1, fp);
     }
-    return -1;
+
+    fclose(fp);
+    pthread_mutex_unlock(&save_mutex);
+    return 0;
 }
 
-static int load_routes_from_disk(const char *filename) {
-    FILE *file = fopen(filename, "rb");
-    if (!file) {
-        perror("Error opening file for reading");
+static int route_load_from_disk(char* filename) {
+    FILE *fp = fopen(filename, "rb");
+    if (fp == NULL) {
+        perror("Error opening route file");
         return -1;
     }
 
     struct route_disk_header header;
-    if (fread(&header, sizeof(header), 1, file) != 1) {
-        perror("Error reading header from file");
-        fclose(file);
-        return -1;
-    }
-
-    if (strcmp(header.magic, "RTS") != 0) {
-        fprintf(stderr, "Invalid file format\n");
-        fclose(file);
+    fread(&header, sizeof(struct route_disk_header), 1, fp);
+    if(strcmp(header.magic, "CWEB") != 0) {
+        fprintf(stderr, "Invalid route file\n");
+        fclose(fp);
         return -1;
     }
 
     for (int i = 0; i < header.count; i++) {
-        struct route_disk rd;
-        if (fread(&rd, sizeof(rd), 1, file) != 1) {
-            perror("Error reading route from file");
-            fclose(file);
-            return -1;
-        }
-        add_route(rd.route, rd.so_path, rd.func, rd.method);
+        char so_path[128];
+        fread(so_path, 128, 1, fp);
+        route_register_module(so_path);
     }
 
-    fclose(file);
+    fclose(fp);
     return 0;
 }
 
-static int save_routes_to_disk(const char *filename) {
-    FILE *file = fopen(filename, "wb");
-    if (!file) {
-        perror("Error opening file for writing");
-        return -1;
-    }
 
-    struct route_disk_header header = { "RTS", route_count };
-    if (fwrite(&header, sizeof(header), 1, file) != 1) {
-        perror("Error writing header to file");
-        fclose(file);
-        return -1;
-    }
-
-    for (int i = 0; i < route_count; i++) {
-        struct route_disk rd;
-        strncpy(rd.route, routes[i].route, sizeof(rd.route));
-        strncpy(rd.so_path, routes[i].so_path, sizeof(rd.so_path));
-        strncpy(rd.func, routes[i].func, sizeof(rd.func));
-        strncpy(rd.method, routes[i].method, sizeof(rd.method));
-
-        if (fwrite(&rd, sizeof(rd), 1, file) != 1) {
-            perror("Error writing route to file");
-            fclose(file);
-            return -1;
-        }
-    }
-
-    fclose(file);
-    return 0;
-}
-
-int route_register(const char *route, const char *so_path, const char *func, const char *method) {
-    struct route *r = route_find(route, method);
-    if (r) {
-        return update_route(r, so_path, func);
-    }
-
-    int ret = add_route(route, so_path, func, method);
-    save_routes_to_disk("routes.dat");
-    return ret;
-}
-
-void route_cleanup() {
-    for (int i = 0; i < route_count; i++) {
-        dlclose(routes[i].handle);
-        unlink(routes[i].so_path);
-    }
-}
 
 void route_init() {
-    load_routes_from_disk("routes.dat");
+    /* Load libmap.so dependency - Only needed for Linux, perhaps wrap in #ifdef */
+    void *map_handle = dlopen("./libs/libmap.so", RTLD_GLOBAL | RTLD_LAZY);
+    if (!map_handle) {
+        fprintf(stderr, "Error loading dependency libmap: %s\n", dlerror());
+        return;
+    }
+
+    route_load_from_disk(ROUTE_FILE);
 }   

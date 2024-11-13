@@ -82,10 +82,12 @@ int add_todo_route(struct http_request *req, struct http_response *res) {
     return 0;
 }
 
-const routes_t routes = {
-    .routes = {
-        {"/", HTTP_GET, index_route},
-        {"/add", HTTP_POST, add_todo_route},
-    },
+const module_t routes = {
+    .module = "todo",
+    .author = "cweb",
     .size = 2,
+    .routes = {
+        {"/", "GET", index_route, FEATURE_FLAG_NONE, 0},
+        {"/add", "POST", add_todo_route, FEATURE_FLAG_NONE, 0},
+    }
 };
