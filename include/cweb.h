@@ -5,6 +5,9 @@
 #include <map.h>
 
 typedef void (*entry_t)(struct http_request *, struct http_response *);
+typedef enum {
+
+} cweb_feature_flag_t;
 
 typedef struct route_info {
     const char *path;
@@ -16,6 +19,5 @@ typedef struct routes {
     route_info_t routes;
     size_t size;
 } routes_t;
-
 
 #endif // CWEB_H

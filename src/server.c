@@ -96,8 +96,10 @@ static int gateway(struct http_request *req, struct http_response *res) {
         snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n"); 
         return 0;
     }
-    
+
+    pthread_mutex_lock(&r->mutex); 
     safe_execute_handler(r->handler, req, res);
+    pthread_mutex_unlock(&r->mutex);
     return 0;
 }
 
@@ -202,7 +204,7 @@ static void *thread_handle_client(void *arg) {
     double time_taken = (end.tv_sec - start.tv_sec) * 1e9;
     time_taken = (time_taken + (end.tv_nsec - start.tv_nsec)) * 1e-9;
 
-    printf("[%ld] Request %s %s took %f seconds\n", req.tid, http_methods[req.method], req.path, time_taken);
+    printf("[%ld] Request %s %s took %f seconds\n", (long)req.tid, http_methods[req.method], req.path, time_taken);
     return NULL;
 }
 

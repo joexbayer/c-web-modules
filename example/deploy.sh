@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DEFAULT_CONFIG_FILE="routes.txt"
+DEFAULT_CONFIG_FILE="routes.ini"
 
 # Color codes for fancy output
 GREEN="\033[0;32m"

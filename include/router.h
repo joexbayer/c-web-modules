@@ -4,6 +4,7 @@
 // Include necessary standard libraries
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 #define ROUTE_SIZE 128
 #define ROUTE_COUNT 100
@@ -30,7 +31,8 @@ struct route {
     /* Dynamic loading */
     void *handle;
     handler_t handler;
-    int loaded;
+    volatile int loaded;
+    pthread_mutex_t mutex;
 };
 
 void route_init();

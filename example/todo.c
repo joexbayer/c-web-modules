@@ -40,13 +40,11 @@ const char* home_template =
 /* Helper */
 static void render_todo_list(char *buffer, size_t buffer_size) {
     char items_buffer[1024] = "";
-
     for (int i = 0; i < list_count; i++) {
         char item[256];
         snprintf(item, sizeof(item), "<li class=\"list-group-item\">%s</li>\n", list[i]);
         strncat(items_buffer, item, sizeof(items_buffer) - strlen(items_buffer) - 1);
     }
-
     snprintf(buffer, buffer_size, todo_template, items_buffer);
 }
 
@@ -56,23 +54,21 @@ int index_route(struct http_request *req, struct http_response *res) {
     char rendered_page[4096];
 
     render_todo_list(content, sizeof(content));
-
     snprintf(rendered_page, sizeof(rendered_page), home_template, head, content);
-
-    res->status = HTTP_200_OK;
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", rendered_page);
     
     map_insert(res->headers, "Content-Type", "text/html");
     map_insert(res->headers, "x-custom-header", "Hello, World!");
 
+    res->status = HTTP_200_OK;
     return 0;
 }
 
 /* Route: /add - Method POST */
 int add_todo_route(struct http_request *req, struct http_response *res) {
     if (list_count >= MAX_ITEMS) {
-        res->status = HTTP_400_BAD_REQUEST;
         snprintf(res->body, HTTP_RESPONSE_SIZE, "TODO list is full.");
+        res->status = HTTP_400_BAD_REQUEST;
         return 0;
     }
 

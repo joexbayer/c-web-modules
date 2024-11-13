@@ -58,10 +58,15 @@ static int load_shared_object(struct route *r, const char *so_path, const char *
 }
 
 static int update_route(struct route *r, const char *so_path, const char *func) {
+    pthread_mutex_lock(&r->mutex);
+
     /* Unload all routes to depdent on current .so file */
     for (int i = 0; i < route_count; i++) {
         if (strcmp(routes[i].so_path, so_path) == 0) {
+            pthread_mutex_lock(&routes[i].mutex);
             routes[i].loaded = 0;
+            dlclose(routes[i].handle);
+            pthread_mutex_unlock(&routes[i].mutex);
         }
     }
     r->loaded = 0;
@@ -70,9 +75,11 @@ static int update_route(struct route *r, const char *so_path, const char *func) 
     strncpy(r->so_path, so_path, sizeof(r->so_path));
     if (load_shared_object(r, so_path, func) == 0) {
         printf("Route '%s' overwritten successfully.\n", r->route);
+        pthread_mutex_unlock(&r->mutex);
         return 0;
     }
 
+    pthread_mutex_unlock(&r->mutex);
     return -1;
 }
 
@@ -88,6 +95,7 @@ static int add_route(const char *route, const char *so_path, const char *func, c
     strncpy(routes[route_count].method, method, sizeof(routes[route_count].method));
     
     routes[route_count].loaded = 0;
+    pthread_mutex_init(&routes[route_count].mutex, NULL);
 
     if (load_shared_object(&routes[route_count], so_path, func) == 0) {
         route_count++;

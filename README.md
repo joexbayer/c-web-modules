@@ -19,23 +19,14 @@ curl -X POST "http://localhost:8080/mgnt" \
 ```
 
 ## TODO:
+CLEANUP
+route locks
+caching?
+Routes struct in C file
 authorization
 sessions (cookies)
 mounted filesystem files.
 cgroups?
-Add METHOD, libs to a post.
-Single header for functions.
-Manage .so files better...
-Should we keep track of source files or ONLY .so?
-Deployment / versions.
-Permanent save route, func and .so file in db?
-Dockerfile.
-Proper HTTP engine
-Helper functions, key value store?
-Hash map...
-fully static libraries? That include their non std libs?
-Send error from server if it doesnt compile, forward error message?
-variable domains?
 
 ```c
 #include <sys/prctl.h>
