@@ -25,39 +25,38 @@ static int route_load_from_disk(char* filename);
 struct route route_find(char *route, char *method) {
     for (int i = 0; i < gateway.count; i++) {
 
-        pthread_mutex_lock(&gateway.entries[i].mutex);
+        pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
         for (int j = 0; j < gateway.entries[i].module->size; j++) {
-            if (strcmp(gateway.entries[i].module->routes[j].path, route) == 0 && strcmp(gateway.entries[i].module->routes[j].method, method) == 0) {
-                /* Caller is responsible for unlocking the mutex! */
+            if (strcmp(gateway.entries[i].module->routes[j].path, route) == 0 &&
+                strcmp(gateway.entries[i].module->routes[j].method, method) == 0) {
+                /* Caller is responsible for unlocking the read lock! */
                 return (struct route){
                     .route = &gateway.entries[i].module->routes[j],
-                    .mutex = &gateway.entries[i].mutex
+                    .rwlock = &gateway.entries[i].rwlock
                 };
             }
         }
-        pthread_mutex_unlock(&gateway.entries[i].mutex);
-
+        pthread_rwlock_unlock(&gateway.entries[i].rwlock);
     }
     return (struct route){0};
 }
 
 static int update_gateway_entry(int index, char* so_path, struct module* routes, void* handle) {
-    pthread_mutex_lock(&gateway.entries[index].mutex);
+    pthread_rwlock_wrlock(&gateway.entries[index].rwlock);
 
-    if(gateway.entries[index].handle)
+    if (gateway.entries[index].handle)
         dlclose(gateway.entries[index].handle);
 
     gateway.entries[index].handle = handle;
-    memset(gateway.entries[index].so_path, 0, 256);
-    strcpy(gateway.entries[index].so_path, so_path);
+    memset(gateway.entries[index].so_path, 0, SO_PATH_MAX_LEN);
+    strncpy(gateway.entries[index].so_path, so_path, SO_PATH_MAX_LEN); 
     gateway.entries[index].module = routes;
-    
-    pthread_mutex_unlock(&gateway.entries[index].mutex);
-    
+
+    pthread_rwlock_unlock(&gateway.entries[index].rwlock);
+
     route_save_to_disk(ROUTE_FILE);
     return 0;
 }
-
 static void* load_shared_object(char* so_path){
     void* handle = dlopen(so_path, RTLD_LAZY);
     if (!handle) {
@@ -95,14 +94,16 @@ static int load_from_shared_object(char* so_path){
                 return 0;
             }
 
+            printf("[INFO   ] Module %s is updated.\n", module->name);
             return update_gateway_entry(i, so_path, module, handle);
         }
     }
 
-    pthread_mutex_init(&gateway.entries[gateway.count].mutex, NULL);
+    pthread_rwlock_init(&gateway.entries[gateway.count].rwlock, NULL);
     update_gateway_entry(gateway.count, so_path, module, handle);
     gateway.count++;
 
+    printf("[INFO   ] Module %s is loaded.\n", module->name);
     route_save_to_disk(ROUTE_FILE);
 
     return 0;
@@ -114,9 +115,9 @@ int route_register_module(char* so_path) {
 
 void route_cleanup() {
     for (int i = 0; i < gateway.count; i++) {
-        pthread_mutex_lock(&gateway.entries[i].mutex);
+        pthread_rwlock_wrlock(&gateway.entries[i].rwlock);
         dlclose(gateway.entries[i].handle);
-        pthread_mutex_unlock(&gateway.entries[i].mutex);
+        pthread_rwlock_unlock(&gateway.entries[i].rwlock);
     }
 }
 
@@ -136,7 +137,7 @@ static int route_save_to_disk(char* filename) {
     fwrite(&header, sizeof(struct route_disk_header), 1, fp);
 
     for (int i = 0; i < gateway.count; i++) {
-        fwrite(gateway.entries[i].so_path, 128, 1, fp);
+        fwrite(gateway.entries[i].so_path, SO_PATH_MAX_LEN, 1, fp);
     }
 
     fclose(fp);
@@ -160,8 +161,8 @@ static int route_load_from_disk(char* filename) {
     }
 
     for (int i = 0; i < header.count; i++) {
-        char so_path[128];
-        fread(so_path, 128, 1, fp);
+        char so_path[SO_PATH_MAX_LEN];
+        fread(so_path, SO_PATH_MAX_LEN, 1, fp);
         route_register_module(so_path);
     }
 
@@ -169,15 +170,15 @@ static int route_load_from_disk(char* filename) {
     return 0;
 }
 
-
-
-void route_init() {
+__attribute__((constructor)) void route_init() {
     /* Load libmap.so dependency - Only needed for Linux, perhaps wrap in #ifdef */
-    void *map_handle = dlopen("./libs/libmap.so", RTLD_GLOBAL | RTLD_LAZY);
+    void *map_handle = dlopen("./libs/libmodule.so", RTLD_GLOBAL | RTLD_LAZY);
     if (!map_handle) {
         fprintf(stderr, "Error loading dependency libmap: %s\n", dlerror());
         return;
     }
 
     route_load_from_disk(ROUTE_FILE);
+
+    printf("[STARTUP] Router initialized\n");
 }   

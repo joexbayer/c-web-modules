@@ -18,28 +18,23 @@
 #include "cweb.h"
 #include "map.h"
 
-struct server {
-    int server_fd;
+struct connection {
+    int sockfd;
     struct sockaddr_in address;
 };
 
-struct client {
-    int client_sock;
-    struct sockaddr_in address;
-};
-
-static struct server server_init(uint16_t port) {
-    struct server s;
-    s.server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (s.server_fd == 0) {
+static struct connection server_init(uint16_t port) {
+    struct connection s;
+    s.sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (s.sockfd == 0) {
         perror("Socket failed");
         exit(EXIT_FAILURE);
     }
 
     int opt = 1;
-    if (setsockopt(s.server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    if (setsockopt(s.sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
         perror("setsockopt failed");
-        close(s.server_fd);
+        close(s.sockfd);
         exit(EXIT_FAILURE);
     }
 
@@ -47,15 +42,15 @@ static struct server server_init(uint16_t port) {
     s.address.sin_addr.s_addr = INADDR_ANY;
     s.address.sin_port = htons(port);
 
-    if (bind(s.server_fd, (struct sockaddr *)&s.address, sizeof(s.address)) < 0) {
+    if (bind(s.sockfd, (struct sockaddr *)&s.address, sizeof(s.address)) < 0) {
         perror("Bind failed");
-        close(s.server_fd);
+        close(s.sockfd);
         exit(EXIT_FAILURE);
     }
 
-    if (listen(s.server_fd, 3) < 0) {
+    if (listen(s.sockfd, 3) < 0) {
         perror("Listen failed");
-        close(s.server_fd);
+        close(s.sockfd);
         exit(EXIT_FAILURE);
     }
 
@@ -63,19 +58,19 @@ static struct server server_init(uint16_t port) {
     return s;
 }
 
-static struct client* server_accept(struct server s) {
-    struct client *c = (struct client *)malloc(sizeof(struct client));
+static struct connection* server_accept(struct connection s) {
+    struct connection *c = (struct connection *)malloc(sizeof(struct connection));
     if (c == NULL) {
         perror("Error allocating memory for client");
-        close(s.server_fd);
+        close(s.sockfd);
         exit(EXIT_FAILURE);
     }
 
     int addrlen = sizeof(s.address);
-    c->client_sock = accept(s.server_fd, (struct sockaddr *)&s.address, (socklen_t *)&addrlen);
-    if (c->client_sock < 0) {
+    c->sockfd = accept(s.sockfd, (struct sockaddr *)&s.address, (socklen_t *)&addrlen);
+    if (c->sockfd < 0) {
         perror("Accept failed");
-        close(s.server_fd);
+        close(s.sockfd);
         free(c);
         exit(EXIT_FAILURE);
     }
@@ -98,9 +93,10 @@ static int gateway(struct http_request *req, struct http_response *res) {
         return 0;
     }
 
-    /* At this point we have already locked the route, so we only release it. */
     safe_execute_handler(r.route->handler, req, res);
-    pthread_mutex_unlock(r.mutex);
+
+    /* Release the read lock after handler execution */
+    pthread_rwlock_unlock(r.rwlock);
     return 0;
 }
 
@@ -108,10 +104,7 @@ static void build_headers(struct http_response *res, char *headers, int headers_
     struct map *headers_map = res->headers;
     int headers_len = 0;
     for (size_t i = 0; i < map_size(headers_map); i++) {
-        const char *key = headers_map->entries[i].key;
-        const char *value = headers_map->entries[i].value;
-
-        int written = snprintf(headers + headers_len, headers_size - headers_len, "%s: %s\r\n", key, value);
+        int written = snprintf(headers + headers_len, headers_size - headers_len, "%s: %s\r\n", headers_map->entries[i].key, (char*)headers_map->entries[i].value);
         if (written < 0 || written >= headers_size - headers_len) {
             fprintf(stderr, "Header buffer overflow\n");
             break;
@@ -121,7 +114,7 @@ static void build_headers(struct http_response *res, char *headers, int headers_
 }
 
 static void *thread_handle_client(void *arg) {
-    struct client *c = (struct client *)arg;
+    struct connection *c = (struct connection *)arg;
 
     /* Measure time */
     struct timespec start, end;
@@ -129,9 +122,9 @@ static void *thread_handle_client(void *arg) {
 
     /* Read in HTTP header */
     char buffer[8*1024] = {0};
-    int read_size = read(c->client_sock, buffer, sizeof(buffer) - 1);
+    int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
     if (read_size <= 0) {
-        close(c->client_sock);
+        close(c->sockfd);
         free(c);
         return NULL;
     }
@@ -143,7 +136,7 @@ static void *thread_handle_client(void *arg) {
 
     /* Make sure entire request is read. TODO: Cant do this for huge requests.. */
     while (req.content_length > read_size) {
-        read_size += read(c->client_sock, buffer + read_size, sizeof(buffer) - read_size - 1);
+        read_size += read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
         buffer[read_size] = '\0';
     }
     req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
@@ -156,7 +149,7 @@ static void *thread_handle_client(void *arg) {
     res.headers = map_create(10);
     if (res.headers == NULL) {
         perror("Error creating map");
-        close(c->client_sock);
+        close(c->sockfd);
         free(c);
         return NULL;
     }
@@ -165,7 +158,7 @@ static void *thread_handle_client(void *arg) {
     res.body = mmap(NULL, HTTP_RESPONSE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (res.body == MAP_FAILED) {
         perror("Error allocating shared memory");
-        close(c->client_sock);
+        close(c->sockfd);
         free(c);
         return NULL;
     }
@@ -189,7 +182,7 @@ static void *thread_handle_client(void *arg) {
     
     char response[8*1024] = {0};
     snprintf(response, sizeof(response), "HTTP/1.1 %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
-    write(c->client_sock, response, strlen(response));
+    write(c->sockfd, response, strlen(response));
 
     /* Clean up */
     if(req.body) free(req.body);
@@ -197,7 +190,7 @@ static void *thread_handle_client(void *arg) {
     map_destroy(req.headers);
     map_destroy(req.data);
     map_destroy(res.headers);
-    close(c->client_sock);
+    close(c->sockfd);
     munmap(res.body, HTTP_RESPONSE_SIZE); 
     free(c);
 
@@ -209,26 +202,31 @@ static void *thread_handle_client(void *arg) {
     return NULL;
 }
 
-
 int main() {
-    route_init();
-    struct server s = server_init(8080);
-    
+    struct connection s = server_init(8080);
+
     while(1){
-        struct client *client = server_accept(s);
+        struct connection *client = server_accept(s);
         if (client == NULL) {
             perror("Error accepting client");
-            close(s.server_fd);
+            close(s.sockfd);
             exit(EXIT_FAILURE);
         }
 
         pthread_t thread;
         if (pthread_create(&thread, NULL, thread_handle_client, client) != 0) {
             perror("Error creating thread");
-            close(s.server_fd);
-            close(client->client_sock);
+            close(s.sockfd);
+            close(client->sockfd);
             free(client);
             exit(EXIT_FAILURE);
+        }
+
+        /* Print counter */
+        int *counter_ptr = (int*)container->get("counter");
+        if (counter_ptr) {
+            int counter = *counter_ptr;
+            printf("Counter: %d\n", counter);
         }
 
         pthread_detach(thread); 

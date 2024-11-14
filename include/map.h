@@ -2,6 +2,7 @@
 #define MAP_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 typedef enum map_error {
     MAP_OK = 0,

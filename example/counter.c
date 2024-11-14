@@ -12,6 +12,7 @@ static const char* template =
 /* Route: /counter - Method GET */
 static int index_route(struct http_request *req, struct http_response *res) {
     snprintf(res->body, HTTP_RESPONSE_SIZE, template, counter++);
+    container->set("counter", &counter);
     res->status = HTTP_200_OK;
     return 0;
 }
@@ -21,7 +22,7 @@ export module_t config = {
     .name = "counter",
     .author = "cweb",
     .routes = {
-        {"/counter", "GET", index_route, FEATURE_FLAG_NONE, 0},
+        {"/counter", "GET", index_route, FEATURE_FLAG_NONE},
     },
     .size = 1,
 };

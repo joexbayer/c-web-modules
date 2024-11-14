@@ -27,9 +27,9 @@ TARGET = $(BIN_DIR)/cweb
 
 # Library
 LIB_DIR = libs
-LIB_SRCS = src/map.c
+LIB_SRCS = src/map.c src/module.c
 LIB_OBJS = $(patsubst $(LIB_DIR)/%.c, $(BUILD_DIR)/%.o, $(LIB_SRCS))
-LIB_TARGET = $(LIB_DIR)/libmap.so
+LIB_TARGET = $(LIB_DIR)/libmodule.so
 
 all: $(TARGET) $(LIB_TARGET)
 
@@ -51,8 +51,9 @@ $(BUILD_DIR)/%.o: $(LIB_DIR)/%.c
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
+	rm -f $(LIB_TARGET)
 
-run: $(TARGET)
+run: all
 	$(TARGET)
 
 

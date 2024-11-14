@@ -23,7 +23,7 @@ static int write_and_compile(const char *filename, const char *code);
  * @param code Code to write to the file
  */
 int write_and_compile(const char *filename, const char *code) {
-    char source_path[256], so_path[256];
+    char source_path[SO_PATH_MAX_LEN], so_path[SO_PATH_MAX_LEN];
     snprintf(source_path, sizeof(source_path), "%s/%s.c", TMP_DIR, filename);
     snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename);
 
@@ -36,8 +36,9 @@ int write_and_compile(const char *filename, const char *code) {
     fprintf(fp, "%s", code);
     fclose(fp);
 
-    char command[562]; // 256 + 256 + 50
-    snprintf(command, sizeof(command), "gcc -fPIC -L./libs -lmap -shared -I./include -o %s %s", so_path, source_path);
+    /* Need enough space for both source, output and command. */
+    char command[SO_PATH_MAX_LEN*2 + 100];
+    snprintf(command, sizeof(command), "gcc -fPIC -L./libs -lmodule -shared -I./include -o %s %s", so_path, source_path);
     if (system(command) != 0) {
         fprintf(stderr, "Compilation failed for %s -> %s\n", source_path, so_path);
         unlink(source_path);
@@ -105,7 +106,7 @@ static int mgnt_register_module(char* code) {
         return -1;
     }
 
-    char so_path[512];
+    char so_path[SO_PATH_MAX_LEN];
     snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename);
 
     free(hash);

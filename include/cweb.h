@@ -3,9 +3,10 @@
 
 #include <http.h>
 #include <map.h>
+#include <container.h>
 
 /* Macro to export a module_t configuration */
-#define export __attribute__((visibility("default"))) 
+#define export __attribute__((visibility("default"))) const 
 
 typedef int (*entry_t)(struct http_request *, struct http_response *);
 typedef enum {
@@ -18,8 +19,6 @@ typedef struct route_info {
     const char *method;
     entry_t handler;
     int flags;
-    /* Used by the module handler */
-    int loaded;
 } route_info_t;
 
 /* Module information */
@@ -29,5 +28,13 @@ typedef struct module {
     route_info_t routes[10];
     int size;
 } module_t;
+
+/* Exposed primitives */
+extern struct container* container;
+// KeyValue store
+// Queues
+// Authentication/Sessions.
+// Config
+// Logging
 
 #endif // CWEB_H

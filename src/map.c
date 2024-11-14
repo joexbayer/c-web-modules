@@ -83,6 +83,8 @@ int map_insert(struct map *map, const char *key, void *value) {
 
 /* Retrieve a value from the map by key */
 void *map_get(const struct map *map, const char *key) {
+    if (!map) return NULL;
+
     for (size_t i = 0; i < map->size; ++i) {
         if (strcmp(map->entries[i].key, key) == 0) {
             return map->entries[i].value;

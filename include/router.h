@@ -7,22 +7,21 @@
 #include <pthread.h>
 #include <cweb.h>
 
-#define ROUTE_SIZE 128
-#define ROUTE_COUNT 100
+#define SO_PATH_MAX_LEN 256
+
 typedef int (*handler_t)(struct http_request *, struct http_response *);
 struct gateway_entry {
     void *handle;
-    char so_path[256];
+    char so_path[SO_PATH_MAX_LEN];
     struct module *module;
-    pthread_mutex_t mutex;
+    pthread_rwlock_t rwlock;
 };
 
 struct route {
     struct route_info *route;
-    pthread_mutex_t* mutex;
+    pthread_rwlock_t* rwlock;
 };
 
-void route_init();
 int route_register_module(char* so_path);
 struct route route_find(char *route, char *method);
 
