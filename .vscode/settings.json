@@ -1,7 +1,0 @@
-{
-    "files.associations": {
-        "cweb.h": "c",
-        "http.h": "c",
-        "router.h": "c"
-    }
-}

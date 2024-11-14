@@ -50,3 +50,9 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Cweb
+.vscode/
+bin/
+modules/routes.dat
+tmp/

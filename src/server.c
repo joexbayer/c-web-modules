@@ -83,6 +83,7 @@ static struct client* server_accept(struct server s) {
     return c;
 }
 
+/* TODO: Run in seprate isolated process. */
 static int gateway(struct http_request *req, struct http_response *res) {
     if (strncmp(req->path, "/favicon.ico", 12) == 0) {
         res->status = HTTP_404_NOT_FOUND;

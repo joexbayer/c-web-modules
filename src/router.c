@@ -6,7 +6,7 @@
 #include <pthread.h>
 
 #define MODULE_TAG "config"
-#define ROUTE_FILE "routes.dat"
+#define ROUTE_FILE "modules/routes.dat"
 
 struct route_disk_header {
     char magic[5];
