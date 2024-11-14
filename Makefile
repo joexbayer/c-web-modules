@@ -9,7 +9,7 @@ SRC_DIR = src
 BUILD_DIR = build
 BIN_DIR = bin
 
-LDFLAGS = -lssl -lcrypto 
+LDFLAGS = -lssl -lcrypto -lsqlite3
 CFLAGS = -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -fsanitize=thread,undefined -g 
 ifeq ($(shell uname), Darwin)
 HOMEBREW_PREFIX := $(shell brew --prefix openssl@3)

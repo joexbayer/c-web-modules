@@ -4,6 +4,7 @@
 #include <http.h>
 #include <map.h>
 #include <container.h>
+#include <db.h>
 
 /* Macro to export a module_t configuration */
 #define export __attribute__((visibility("default"))) const 

@@ -3,6 +3,10 @@
 ## Dependecies
 ```bash
 sudo apt-get install libssl-dev
+sudo apt-get install libsqlite3-dev
+
+brew install sqlite
+brew install openssl@3
 
 # Create certificate
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365
