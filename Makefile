@@ -10,7 +10,7 @@ BUILD_DIR = build
 BIN_DIR = bin
 
 LDFLAGS = -lssl -lcrypto 
-CFLAGS = -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -fsanitize=thread,undefined -g
+CFLAGS = -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -fsanitize=thread,undefined -g 
 ifeq ($(shell uname), Darwin)
 HOMEBREW_PREFIX := $(shell brew --prefix openssl@3)
 	ifeq ($(HOMEBREW_PREFIX),)
@@ -20,6 +20,11 @@ HOMEBREW_PREFIX := $(shell brew --prefix openssl@3)
 	LDFLAGS += -L/opt/homebrew/opt/openssl@3/lib
 endif
 
+# Export dynamic symbols on Linux
+ifeq ($(shell uname), Linux)
+	CFLAGS += -Wl,--export-dynamic
+endif
+
 SRCS = $(wildcard $(SRC_DIR)/*.c) 
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 
@@ -27,11 +32,11 @@ TARGET = $(BIN_DIR)/cweb
 
 # Library
 LIB_DIR = libs
-LIB_SRCS = src/map.c src/module.c
+LIB_SRCS = libs/module.c src/map.c
 LIB_OBJS = $(patsubst $(LIB_DIR)/%.c, $(BUILD_DIR)/%.o, $(LIB_SRCS))
 LIB_TARGET = $(LIB_DIR)/libmodule.so
 
-all: $(TARGET) $(LIB_TARGET)
+all: $(LIB_TARGET) $(TARGET)
 
 $(TARGET): $(OBJS)
 	@mkdir -p $(BIN_DIR)

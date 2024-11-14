@@ -13,7 +13,7 @@ static struct container internal_container = {
     .get = container_get,
     .data = NULL,
 };
-struct container* exposed_container = &internal_container;
+__attribute__((visibility("default"))) struct container* exposed_container = &internal_container;
 static pthread_mutex_t container_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int container_set(const char *name, void* value) {

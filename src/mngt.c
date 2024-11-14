@@ -106,7 +106,7 @@ static int mgnt_register_module(char* code) {
         return -1;
     }
 
-    char so_path[SO_PATH_MAX_LEN];
+    char so_path[SO_PATH_MAX_LEN + 12]; // 12 for / and .so
     snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename);
 
     free(hash);

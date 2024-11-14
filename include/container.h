@@ -11,4 +11,6 @@ struct container {
     struct map *data;
 };
 
+extern struct container* exposed_container;
+
 #endif // CONTAINER_H

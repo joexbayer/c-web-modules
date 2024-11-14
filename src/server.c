@@ -222,13 +222,6 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
-        /* Print counter */
-        int *counter_ptr = (int*)container->get("counter");
-        if (counter_ptr) {
-            int counter = *counter_ptr;
-            printf("Counter: %d\n", counter);
-        }
-
         pthread_detach(thread); 
     }
 

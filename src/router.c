@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <container.h>
 
 #define MODULE_TAG "config"
 #define ROUTE_FILE "modules/routes.dat"
