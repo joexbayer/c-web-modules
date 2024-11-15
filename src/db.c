@@ -33,4 +33,5 @@ __attribute__((constructor)) void db_init() {
 
 __attribute__((destructor)) void db_close() {
     sqlite3_close(sql_db.db);
+    printf("[SHUTDOWN] Database closed\n");
 }

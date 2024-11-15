@@ -182,4 +182,10 @@ __attribute__((constructor)) void route_init() {
     route_load_from_disk(ROUTE_FILE);
 
     printf("[STARTUP] Router initialized\n");
-}   
+}
+
+__attribute__((destructor)) void route_close() {
+    route_save_to_disk(ROUTE_FILE);
+    route_cleanup();
+    printf("[SHUTDOWN] Router closed\n");
+}

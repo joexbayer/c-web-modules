@@ -3,13 +3,14 @@
 
 #include <pthread.h>
 
+typedef void (*work_t)(void *);
 typedef enum {
     ASYNC,
     SYNC
 } worker_state_t;
 
 struct work {
-    void (*work)(void *);
+    work_t work;
     void *data;
     struct work *next;
 }; 
@@ -21,7 +22,7 @@ struct scheduler {
 
     pthread_mutex_t mutex;
 
-    void (*add)(void (*work)(void *), void *data, worker_state_t state);
+    int (*add)(void (*work)(void *), void *data, worker_state_t state);
 };
 extern struct scheduler *exposed_scheduler;
 

@@ -37,3 +37,8 @@ __attribute__((constructor)) static void container_init() {
     printf("[STARTUP] Container initialized\n");
 }
 
+__attribute__((destructor)) static void container_destroy() {
+    map_destroy(internal_container.data);
+    printf("[SHUTDOWN] Container destroyed\n");
+}
+

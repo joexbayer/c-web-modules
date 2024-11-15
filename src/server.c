@@ -12,12 +12,33 @@
 #include <netinet/in.h>
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <errno.h>
 
 #include "http.h"
 #include "router.h"
 #include "cweb.h"
 #include "map.h"
 #include "db.h"
+#include "scheduler.h"
+
+
+#define MODULE_URL "/mgnt"
+
+/* Feature for later... */
+static const char* allowed_management_commands[] = {
+    "reload",
+    "shutdown",
+    "status",
+    "routes",
+    "modules",
+    "help"
+};
+
+static const char* allowed_ip_prefixes[] = {
+    "192.168.",
+    "10.0.",
+    "172.16."
+};
 
 struct connection {
     int sockfd;
@@ -71,9 +92,8 @@ static struct connection* server_accept(struct connection s) {
     c->sockfd = accept(s.sockfd, (struct sockaddr *)&s.address, (socklen_t *)&addrlen);
     if (c->sockfd < 0) {
         perror("Accept failed");
-        close(s.sockfd);
         free(c);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     return c;
@@ -101,6 +121,7 @@ static int gateway(struct http_request *req, struct http_response *res) {
     return 0;
 }
 
+/* Build headers for response */
 static void build_headers(struct http_response *res, char *headers, int headers_size) {
     struct map *headers_map = res->headers;
     int headers_len = 0;
@@ -165,7 +186,7 @@ static void *thread_handle_client(void *arg) {
     }
 
     /* Handle management requests */
-    if(strncmp(req.path, "/mgnt", 6) == 0) {
+    if(strncmp(req.path, MODULE_URL, 6) == 0) {
         if(mgnt_parse_request(&req) >= 0) {
             res.status = HTTP_200_OK;
             snprintf(res.body, HTTP_RESPONSE_SIZE, "Management request received.\n");
@@ -203,28 +224,48 @@ static void *thread_handle_client(void *arg) {
     return NULL;
 }
 
+/* Signal handler */
+static volatile sig_atomic_t stop = 0;
+static void server_signal_handler(int sig) {
+    (void)sig;
+    stop = 1;
+}
+
 int main() {
+    (void)allowed_management_commands;
+    (void)allowed_ip_prefixes;
+    
+    struct sigaction sa;
+    sa.sa_handler = server_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
     struct connection s = server_init(8080);
 
-    while(1){
+    while (!stop) {
         struct connection *client = server_accept(s);
         if (client == NULL) {
+            if (errno == EINTR && stop) {
+                break;
+            }
             perror("Error accepting client");
-            close(s.sockfd);
-            exit(EXIT_FAILURE);
+            continue;
         }
 
         pthread_t thread;
         if (pthread_create(&thread, NULL, thread_handle_client, client) != 0) {
             perror("Error creating thread");
-            close(s.sockfd);
             close(client->sockfd);
             free(client);
-            exit(EXIT_FAILURE);
+            continue;
         }
-
-        pthread_detach(thread); 
+        pthread_detach(thread);
     }
+
+    close(s.sockfd);
+    printf("Server shutting down gracefully.\n");
 
     return 0;
 }

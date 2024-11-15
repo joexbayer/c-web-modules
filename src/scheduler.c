@@ -1,6 +1,10 @@
 #include <scheduler.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
-static add_work(void (*work)(void *), void *data, worker_state_t state);
+static int add_work(work_t work, void *data, worker_state_t state);
 
 struct scheduler internal_scheduler = {
     .queue = NULL,
@@ -11,12 +15,19 @@ struct scheduler internal_scheduler = {
 };
 struct scheduler *exposed_scheduler = &internal_scheduler;
 
-static add_work(void (*work)(void *), void *data, worker_state_t state) {
+static pthread_t scheduler_thread;
+static pthread_cond_t work_available = PTHREAD_COND_INITIALIZER;
+static volatile atomic_int running = 1;
+
+static int add_work(work_t work, void *data, worker_state_t state) {
     struct work *new_work = (struct work *)malloc(sizeof(struct work));
     if (new_work == NULL) {
         perror("Error allocating memory for work");
-        return;
+        return -1;
     }
+
+    /* TODO: Implement the choice of state... */
+    (void)state;
 
     new_work->work = work;
     new_work->data = data;
@@ -34,30 +45,56 @@ static add_work(void (*work)(void *), void *data, worker_state_t state) {
     }
     internal_scheduler.size++;
     pthread_mutex_unlock(&internal_scheduler.mutex);
+
+    /* use this to signal the thread that new work is available */
+    pthread_cond_signal(&work_available);
+
+    return 0;
 }
 
-static void run_work(void) {
-    pthread_mutex_lock(&internal_scheduler.mutex);
-    if (internal_scheduler.size == 0) {
+static void* scheduler_thread_function(void *arg) {
+    (void)arg;
+
+    while (running) {
+        pthread_mutex_lock(&internal_scheduler.mutex);
+
+        /* Wait until the add_work functions signals that new work is avaiable. */
+        while (internal_scheduler.size == 0 && running) {
+            /* Avoid constantly running */
+            pthread_cond_wait(&work_available, &internal_scheduler.mutex);
+        }
+ 
+        if (!running) {
+            pthread_mutex_unlock(&internal_scheduler.mutex);
+            break;
+        }
+
+        struct work *current = internal_scheduler.queue;
+        internal_scheduler.queue = current->next;
+        internal_scheduler.size--;
+
         pthread_mutex_unlock(&internal_scheduler.mutex);
-        return;
+
+        current->work(current->data);
+        free(current);
     }
 
-    struct work *current = internal_scheduler.queue;
-    internal_scheduler.queue = current->next;
-    internal_scheduler.size--;
+    printf("[SHUTDOWN] Scheduler thread exiting\n");
 
-    pthread_mutex_unlock(&internal_scheduler.mutex);
-
-    current->work(current->data);
-    free(current);
+    return NULL;
 }
 
-pthread_t scheduler_thread;
-__constructor__ void scheduler_init() {
-    if (pthread_create(&scheduler_thread, NULL, run_work, NULL) != 0) {
+__attribute__((constructor)) void scheduler_init() {
+    if (pthread_create(&scheduler_thread, NULL, scheduler_thread_function, NULL) != 0) {
         perror("Error creating scheduler thread");
         exit(EXIT_FAILURE);
     }
-    pthread_detach(thread);
+    pthread_detach(scheduler_thread);
+}
+
+__attribute__((destructor)) void scheduler_destroy() {
+    running = 0;
+    pthread_cond_signal(&work_available);
+    pthread_join(scheduler_thread, NULL);
+    printf("[SHUTDOWN] Scheduler destroyed\n");
 }
