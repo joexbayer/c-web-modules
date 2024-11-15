@@ -56,3 +56,4 @@ dkms.conf
 bin/
 modules/routes.dat
 tmp/
+db.sqlite3
