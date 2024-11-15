@@ -10,19 +10,19 @@ BUILD_DIR = build
 BIN_DIR = bin
 
 LDFLAGS = -lssl -lcrypto -lsqlite3
-CFLAGS = -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -fsanitize=thread,undefined -g 
+CFLAGS = -O2 -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -g 
 ifeq ($(shell uname), Darwin)
 HOMEBREW_PREFIX := $(shell brew --prefix openssl@3)
 	ifeq ($(HOMEBREW_PREFIX),)
 		$(error openssl@3 is not installed, make sure its installed with `brew install openssl@3`)
 	endif
-	CFLAGS += -I/opt/homebrew/opt/openssl@3/include
+	CFLAGS += -I/opt/homebrew/opt/openssl@3/include -fsanitize=thread,undefined
 	LDFLAGS += -L/opt/homebrew/opt/openssl@3/lib
 endif
 
 # Export dynamic symbols on Linux
 ifeq ($(shell uname), Linux)
-	CFLAGS += -Wl,--export-dynamic
+	CFLAGS += -Wl,--export-dynamic -fsanitize=thread,undefined,address,leak,bounds,memory
 endif
 
 SRCS = $(wildcard $(SRC_DIR)/*.c) 
@@ -48,7 +48,7 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 
 $(LIB_TARGET): $(LIB_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) -I./include -fPIC -shared -o $@ $^
+	$(CC) $(CFLAGS) -I./include -fPIC -shared -o $@ $^
 
 $(BUILD_DIR)/%.o: $(LIB_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)

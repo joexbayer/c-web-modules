@@ -97,7 +97,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
         req->method = -1;
     }
 
-    req->headers = map_create(10);
+    req->headers = map_create(32);
     req->params = map_create(10);
     if (!req->headers || !req->params) {
         perror("Failed to create map");

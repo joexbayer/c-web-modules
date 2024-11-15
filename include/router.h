@@ -26,7 +26,7 @@ int route_register_module(char* so_path);
 struct route route_find(char *route, char *method);
 
 /* TODO: Move... */
-int mgnt_parse_request(struct http_request *req);
+int mgnt_parse_request(struct http_request *req, struct http_response *res);
 void safe_execute_handler(handler_t handler, struct http_request *req, struct http_response *res);
 
 #define dbgprint(fmt, ...) \

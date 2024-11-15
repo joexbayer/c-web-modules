@@ -14,15 +14,12 @@
 
 #define TMP_DIR "modules"
 
-/* static prototypes */
-static int write_and_compile(const char *filename, const char *code);
-
 /**
  * Write code to a temporary file and compile it to .so
  * @param filename Name of the file
  * @param code Code to write to the file
  */
-int write_and_compile(const char *filename, const char *code) {
+int write_and_compile(const char *filename, const char *code, char *error_buffer, size_t buffer_size) {
     char source_path[SO_PATH_MAX_LEN], so_path[SO_PATH_MAX_LEN];
     snprintf(source_path, sizeof(source_path), "%s/%s.c", TMP_DIR, filename);
     snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename);
@@ -36,17 +33,33 @@ int write_and_compile(const char *filename, const char *code) {
     fprintf(fp, "%s", code);
     fclose(fp);
 
-    /* Need enough space for both source, output and command. */
-    char command[SO_PATH_MAX_LEN*2 + 100];
-    snprintf(command, sizeof(command), "gcc -fPIC -L./libs -lmodule -shared -I./include -o %s %s", so_path, source_path);
-    if (system(command) != 0) {
+    char command[SO_PATH_MAX_LEN * 2 + 200];
+    snprintf(command, sizeof(command), "gcc -fPIC -L./libs -lmodule -shared -I./include -o %s %s 2>&1", so_path, source_path);
+
+    FILE *gcc_output = popen(command, "r");
+    if (gcc_output == NULL) {
+        perror("Error running gcc");
+        unlink(source_path);
+        return -1;
+    }
+
+    /* Read gcc output into the error buffer */
+    size_t bytes_read = 0;
+    while (fgets(error_buffer + bytes_read, buffer_size - bytes_read, gcc_output) != NULL) {
+        bytes_read = strlen(error_buffer);
+        if (bytes_read >= buffer_size - 1) {
+            break; 
+        }
+    }
+
+    int exit_code = pclose(gcc_output);
+    if (exit_code != 0) {
         fprintf(stderr, "Compilation failed for %s -> %s\n", source_path, so_path);
         unlink(source_path);
         return -1;
     }
-    unlink(source_path);
 
-    //dbgprint("Compilation successful for %s\n", filename);
+    unlink(source_path);
     return 0;
 }
 
@@ -86,7 +99,7 @@ static char* hash_code(char* code) {
  * @param method HTTP method
  * @return 0 on success, -1 on failure
  */
-static int mgnt_register_module(char* code) {
+static int mgnt_register_module(struct http_response *req, char* code) {
     if(code == NULL ) {
         fprintf(stderr, "Code is NULL\n");
         return -1;
@@ -101,7 +114,7 @@ static int mgnt_register_module(char* code) {
     char filename[256];
     snprintf(filename, sizeof(filename), "%s", hash);
 
-    if (write_and_compile(filename, code) != 0) {
+    if (write_and_compile(filename, code, req->body, HTTP_RESPONSE_SIZE) == -1) {
         fprintf(stderr, "Failed to register '%s' due to compilation error.\n", filename);
         return -1;
     }
@@ -114,10 +127,10 @@ static int mgnt_register_module(char* code) {
     return route_register_module(so_path);
 }
 
-int mgnt_parse_request(struct http_request *req) {
+int mgnt_parse_request(struct http_request *req, struct http_response *res) {
     if (req->method == -1) {
         return -1;
     }
 
-    return mgnt_register_module(map_get(req->data, "code"));;
+    return mgnt_register_module(res, map_get(req->data, "code"));;
 }

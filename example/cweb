@@ -3,10 +3,22 @@ DEFAULT_CONFIG_FILE="routes.ini"
 GREEN="\033[0;32m"; YELLOW="\033[1;33m"; RED="\033[0;31m"; BLUE="\033[1;34m"; NC="\033[0m"
 
 deploy_module() {
-    local code="$1" server_url="$2" response
+    local code="$1" server_url="$2"
+    local response_body response_code
+
     echo -e "${BLUE}→ Deploying ${YELLOW}$code${NC} to ${YELLOW}$server_url${NC}..."
-    response=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$server_url" -F "code=@$code")
-    [[ "$response" == "200" ]] && echo -e "${GREEN}✔ Deployment succeeded${NC}\n" || echo -e "${RED}✖ Deployment failed (HTTP $response)${NC}\n"
+
+    # Capture both the HTTP response body and status code
+    response_body=$(curl -s -w "%{http_code}" -o /tmp/response_body -X POST "$server_url" -F "code=@$code")
+    response_code="${response_body:(-3)}" # Extract last 3 characters (HTTP status code)
+    response_body=$(cat /tmp/response_body) # Read the response body from the file
+
+    if [[ "$response_code" == "200" ]]; then
+        echo -e "${GREEN}✔ Deployment succeeded${NC}\n"
+    else
+        echo -e "${RED}✖ Deployment failed (HTTP $response_code)${NC}\n"
+        echo -e "${RED}Response: $response_body${NC}\n"
+    fi
 }
 
 deploy_from_config() {

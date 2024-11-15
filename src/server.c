@@ -21,7 +21,6 @@
 #include "db.h"
 #include "scheduler.h"
 
-
 #define MODULE_URL "/mgnt"
 
 /* Feature for later... */
@@ -40,10 +39,41 @@ static const char* allowed_ip_prefixes[] = {
     "172.16."
 };
 
+struct cidr_prefix {
+    uint32_t prefix;    // Integer representation of the prefix
+    uint8_t prefix_len; // Length of the prefix in bits
+};
+
 struct connection {
     int sockfd;
     struct sockaddr_in address;
 };
+
+// static int parse_cidr(const char *cidr_str, struct cidr_prefix *result) {
+//     char ip[INET_ADDRSTRLEN];
+//     int prefix_len;
+
+//     if (sscanf(cidr_str, "%15[^/]/%d", ip, &prefix_len) != 2) {
+//         fprintf(stderr, "Invalid CIDR format: %s\n", cidr_str);
+//         return -1;
+//     }
+
+//     if (prefix_len < 0 || prefix_len > 32) {
+//         fprintf(stderr, "Invalid prefix length: %d\n", prefix_len);
+//         return -1;
+//     }
+
+//     struct in_addr addr;
+//     if (inet_pton(AF_INET, ip, &addr) != 1) {
+//         fprintf(stderr, "Invalid IP address: %s\n", ip);
+//         return -1;
+//     }
+
+//     result->prefix = ntohl(addr.s_addr); // Convert to host byte order
+//     result->prefix_len = (uint8_t)prefix_len;
+
+//     return 0;
+// }
 
 static struct connection server_init(uint16_t port) {
     struct connection s;
@@ -166,9 +196,14 @@ static void *thread_handle_client(void *arg) {
     /* Parse potential data in the body (like form data) */
     http_parse_data(&req);
 
+    if(http_is_websocket_upgrade(&req)) {
+        ws_handle_client(c->sockfd, &req);
+        return NULL;
+    }
+
     /* Prepare response */
     struct http_response res;
-    res.headers = map_create(10);
+    res.headers = map_create(32);
     if (res.headers == NULL) {
         perror("Error creating map");
         close(c->sockfd);
@@ -187,12 +222,10 @@ static void *thread_handle_client(void *arg) {
 
     /* Handle management requests */
     if(strncmp(req.path, MODULE_URL, 6) == 0) {
-        if(mgnt_parse_request(&req) >= 0) {
-            res.status = HTTP_200_OK;
-            snprintf(res.body, HTTP_RESPONSE_SIZE, "Management request received.\n");
-        } else{
+        if(mgnt_parse_request(&req, &res) >= 0) {
+            res.status = HTTP_200_OK; 
+        } else {
             res.status = HTTP_500_INTERNAL_SERVER_ERROR;
-            snprintf(res.body, HTTP_RESPONSE_SIZE, "Management request failed.\n");
         }
     } else {
         /* Handle gateway requests */

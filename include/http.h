@@ -38,6 +38,8 @@ struct http_request {
     struct map *params;
     struct map *headers;
     struct map *data;
+
+    int websocket;
 };
 
 struct http_response {
@@ -46,7 +48,15 @@ struct http_response {
     char *body;
 };
 
+struct websocket {
+    char* session;
+    int client_fd;
+    int (*send)(struct websocket* ws, const char *message, size_t length);
+};
+
 int http_parse(const char *request, struct http_request *req);
 int http_parse_data(struct http_request *req);  
+int http_is_websocket_upgrade(struct http_request *req);
+void ws_handle_client(int client_fd, struct http_request *req);
 
 #endif // HTTP_H
