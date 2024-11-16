@@ -75,6 +75,8 @@ struct connection {
 //     return 0;
 // }
 
+void ws_handle_client(int sd, struct http_request *req, struct http_response *res, struct ws_info *ws_module_info);
+
 static struct connection server_init(uint16_t port) {
     struct connection s;
     s.sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -130,10 +132,35 @@ static struct connection* server_accept(struct connection s) {
 }
 
 /* TODO: Run in seprate isolated process. */
-static int gateway(struct http_request *req, struct http_response *res) {
+static int gateway(int fd, struct http_request *req, struct http_response *res) {
     if (strncmp(req->path, "/favicon.ico", 12) == 0) {
         res->status = HTTP_404_NOT_FOUND;
         snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n");
+        return 0;
+    }
+
+    if(strncmp(req->path, MODULE_URL, 6) == 0) {
+        if(mgnt_parse_request(req, res) >= 0) {
+            res->status = HTTP_200_OK; 
+        } else {
+            res->status = HTTP_500_INTERNAL_SERVER_ERROR;
+        }
+        return 0;
+    }
+
+    if(http_is_websocket_upgrade(req)) {
+        struct ws_route ws = ws_route_find(req->path);
+        if (ws.info == NULL) {
+            res->status = HTTP_404_NOT_FOUND;
+            snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n");
+            return 0;
+        }
+
+        /* Upgrade to websocket */
+        ws_handle_client(fd, req, res, ws.info);
+
+        pthread_rwlock_unlock(ws.rwlock);
+
         return 0;
     }
 
@@ -196,11 +223,6 @@ static void *thread_handle_client(void *arg) {
     /* Parse potential data in the body (like form data) */
     http_parse_data(&req);
 
-    if(http_is_websocket_upgrade(&req)) {
-        ws_handle_client(c->sockfd, &req);
-        return NULL;
-    }
-
     /* Prepare response */
     struct http_response res;
     res.headers = map_create(32);
@@ -211,33 +233,34 @@ static void *thread_handle_client(void *arg) {
         return NULL;
     }
 
-    /* Memory allocated for body with mmap to be able to share between proccesses (currently not used.) */
-    res.body = mmap(NULL, HTTP_RESPONSE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (res.body == MAP_FAILED) {
-        perror("Error allocating shared memory");
+    /* Memory allocated for body with malloc */
+    res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
+    if (res.body == NULL) {
+        perror("Error allocating memory for response body");
         close(c->sockfd);
         free(c);
         return NULL;
     }
 
-    /* Handle management requests */
-    if(strncmp(req.path, MODULE_URL, 6) == 0) {
-        if(mgnt_parse_request(&req, &res) >= 0) {
-            res.status = HTTP_200_OK; 
-        } else {
-            res.status = HTTP_500_INTERNAL_SERVER_ERROR;
-        }
-    } else {
-        /* Handle gateway requests */
-        gateway(&req, &res);
-    }
+    /* Handle gateway requests */
+    gateway(c->sockfd, &req, &res);
 
     char headers[4*1024] = {0};
     build_headers(&res, headers, sizeof(headers));
+
+    for(size_t i = 0; i < map_size(res.headers); i++) {
+        printf("[%ld] Response header: %s: %s\n", (long)req.tid, res.headers->entries[i].key, (char*)res.headers->entries[i].value);
+    }
     
     char response[8*1024] = {0};
     snprintf(response, sizeof(response), "HTTP/1.1 %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
     write(c->sockfd, response, strlen(response));
+
+    printf("[%ld] Response: %s\n", (long)req.tid, response);
+
+    /* TODO FIX THIS, need to manually free this */
+    char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
+    if(ac) free(ac);
 
     /* Clean up */
     if(req.body) free(req.body);
@@ -245,9 +268,14 @@ static void *thread_handle_client(void *arg) {
     map_destroy(req.headers);
     map_destroy(req.data);
     map_destroy(res.headers);
-    close(c->sockfd);
-    munmap(res.body, HTTP_RESPONSE_SIZE); 
+
+    /* Dont close connection if its a websocket */
+    if(!req.websocket) {
+        printf("[%ld] Closing connection (not a websocket)\n", (long)req.tid);
+        close(c->sockfd);
+    }
     free(c);
+    free(res.body);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
     double time_taken = (end.tv_sec - start.tv_sec) * 1e9;
@@ -267,6 +295,8 @@ static void server_signal_handler(int sig) {
 int main() {
     (void)allowed_management_commands;
     (void)allowed_ip_prefixes;
+
+    printf("Starting server...\n");
     
     struct sigaction sa;
     sa.sa_handler = server_signal_handler;

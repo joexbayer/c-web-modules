@@ -9,6 +9,8 @@
 #include <http.h>
 #include <map.h>
 #include <list.h>
+#include <cweb.h>
+#include <libevent.h>
 
 typedef enum {
     WS_OPCODE_CONTINUATION = 0x0,
@@ -17,7 +19,7 @@ typedef enum {
     WS_OPCODE_CLOSE = 0x8,
     WS_OPCODE_PING = 0x9,
     WS_OPCODE_PONG = 0xA
-} websocket_opcode_t;
+} ws_opcode_t;
 
 typedef enum {
     WS_FRAME_INCOMPLETE,
@@ -34,66 +36,43 @@ struct websocket_frame {
     unsigned char *payload;
 };
 
-static struct list* websocket_list;
-static pthread_mutex_t websocket_list_mutex = PTHREAD_MUTEX_INITIALIZER;
+struct ws_container {
+    struct event *ev;
+    struct websocket *ws;
+    struct ws_info *info;
+};
+
+static int ws_send(struct websocket *ws, const char *message, size_t length);
+static int ws_close(struct websocket *ws);
+
+static void ws_handle_event_callback(struct event *ev, void *arg);
+static void ws_handle_websocket_frames(struct websocket *ws, struct ws_info *info);
+static int ws_send_frame(int client_fd, const char *message, int length, uint8_t opcode);
+
+static struct list *ws_container_list;
+static pthread_mutex_t ws_container_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 __attribute__((constructor)) void ws_init() {
-    websocket_list = list_create();
-    pthread_mutex_init(&websocket_list_mutex, NULL);
+    ws_container_list = list_create();
+    pthread_mutex_init(&ws_container_list_mutex, NULL);
 }
 
-__attribute__((destructor)) void ws_close() {
-    pthread_mutex_lock(&websocket_list_mutex);
+__attribute__((destructor)) void ws_destroy() {
+    pthread_mutex_lock(&ws_container_list_mutex);
 
-    LIST_FOREACH(websocket_list, node) {
-        struct websocket *ws = node->data;
-        close(ws->client_fd);
-        free(ws);
+    LIST_FOREACH_SAFE(ws_container_list, node, tmp) {
+        struct ws_container *container = node->data;
+        event_del(container->ev);
+        close(container->ws->client_fd);
+        free(container->ws);
+        free(container);
+        list_remove(ws_container_list, node);
     }
 
-    list_destroy(websocket_list);
-    pthread_mutex_unlock(&websocket_list_mutex);
-    pthread_mutex_destroy(&websocket_list_mutex);
+    list_destroy(ws_container_list);
+    pthread_mutex_unlock(&ws_container_list_mutex);
+    pthread_mutex_destroy(&ws_container_list_mutex);
 }
-
-/* Exposed, Needed for later */
-static int ws_send(struct websocket *ws, const char *message, size_t length) {
-    (void)ws;
-    (void)message;
-    (void)length;
-    return 0;
-}
-
-__attribute__((used)) static struct websocket *ws_create(int client_fd) {
-    struct websocket *ws = malloc(sizeof(struct websocket));
-    if (!ws) {
-        perror("Failed to allocate memory for websocket");
-        return NULL;
-    }
-
-    ws->client_fd = client_fd;
-    ws->session = NULL;
-    ws->send = ws_send;
-
-    pthread_mutex_lock(&websocket_list_mutex);
-    list_add(websocket_list, ws);
-    pthread_mutex_unlock(&websocket_list_mutex);
-
-    return ws;
-}
-
-int ws_destroy(struct websocket *ws) {
-    if (!ws) return -1;
-
-    pthread_mutex_lock(&websocket_list_mutex);
-    list_remove(websocket_list, ws);
-    pthread_mutex_unlock(&websocket_list_mutex);
-
-    free(ws);
-    return 0;
-}
-
-
 
 /* helper for websockets base64 */
 static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -116,7 +95,8 @@ static void base64_encode(const unsigned char *input, size_t input_len, char *ou
     output[j] = '\0';
 }
 
-void ws_compute_accept_key(const char *client_key, char *accept_key) {
+
+static void ws_compute_accept_key(const char *client_key, char *accept_key) {
     const char *websocket_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     char combined[256];
     unsigned char sha1_result[SHA_DIGEST_LENGTH];
@@ -126,44 +106,86 @@ void ws_compute_accept_key(const char *client_key, char *accept_key) {
     base64_encode(sha1_result, SHA_DIGEST_LENGTH, accept_key);
 }
 
-int http_is_websocket_upgrade(struct http_request *req) {
-    const char *connection = map_get(req->headers, "Connection");
-    const char *upgrade = map_get(req->headers, "Upgrade");
-    
-    if (connection && upgrade && strcasestr(connection, "Upgrade") && strcasecmp(upgrade, "websocket") == 0) {
-        return 1;
+static struct ws_container *ws_container_create(int client_fd, struct ws_info *info) {
+    struct websocket *ws = malloc(sizeof(struct websocket));
+    if (!ws) {
+        perror("Failed to allocate memory for websocket");
+        return NULL;
     }
-    
+
+    ws->client_fd = client_fd;
+    ws->session = NULL;
+    ws->send = ws_send;
+    ws->close = ws_close;
+
+    struct ws_container *container = malloc(sizeof(struct ws_container));
+    if (!container) {
+        perror("Failed to allocate memory for ws_container");
+        free(ws);
+        return NULL;
+    }
+
+    container->ws = ws;
+    container->info = info;
+    container->ev = event_new(client_fd, 0, ws_handle_event_callback, container);
+    if (!container->ev) {
+        perror("Failed to create event");
+        free(ws);
+        free(container);
+        return NULL;
+    }
+
+    pthread_mutex_lock(&ws_container_list_mutex);
+    list_add(ws_container_list, container);
+    pthread_mutex_unlock(&ws_container_list_mutex);
+
+    return container;
+}
+
+static int ws_container_destroy(struct ws_container *container) {
+    if (!container) return -1;
+
+    pthread_mutex_lock(&ws_container_list_mutex);
+    list_remove(ws_container_list, container);
+    pthread_mutex_unlock(&ws_container_list_mutex);
+
+    event_del(container->ev);
+    close(container->ws->client_fd);
+    free(container->ws);
+    free(container);
     return 0;
 }
 
-static void ws_handle_upgrade(int client_fd, struct http_request *req) {
-    const char *client_key = map_get(req->headers, "Sec-WebSocket-Key");
-    if (!client_key) {
-        fprintf(stderr, "Missing Sec-WebSocket-Key header\n");
-        close(client_fd);
+static struct ws_container *ws_container_find(int client_fd) {
+    struct ws_container *container = NULL;
+    pthread_mutex_lock(&ws_container_list_mutex);
+
+    LIST_FOREACH(ws_container_list, node) {
+        struct ws_container *current = node->data;
+        if (current->ws->client_fd == client_fd) {
+            container = current;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&ws_container_list_mutex);
+    return container;
+}
+
+static void ws_handle_event_callback(struct event *ev, void *arg) {
+    struct ws_container *container = (struct ws_container *)arg;
+    (void)ev;
+
+    if (!container || !container->ws || !container->info) {
+        fprintf(stderr, "Invalid container or resources\n");
         return;
     }
 
-    char accept_key[128];
-    ws_compute_accept_key(client_key, accept_key);
-
-    char response[256];
-    snprintf(response, sizeof(response),
-             "HTTP/1.1 101 Switching Protocols\r\n"
-             "Upgrade: websocket\r\n"
-             "Connection: Upgrade\r\n"
-             "Sec-WebSocket-Accept: %s\r\n\r\n",
-             accept_key);
-
-    send(client_fd, response, strlen(response), 0);
-    req->websocket = 1;
+    ws_handle_websocket_frames(container->ws, container->info);
 }
 
 static ws_frame_status_t ws_decode_frame(const unsigned char *data, size_t data_len, struct websocket_frame *frame) {
-    if (data_len < 2) {
-        return WS_FRAME_INCOMPLETE;
-    }
+    if (data_len < 2) return WS_FRAME_INCOMPLETE;
 
     frame->fin = (data[0] & 0x80) != 0;
     frame->opcode = data[0] & 0x0F;
@@ -202,16 +224,9 @@ static ws_frame_status_t ws_decode_frame(const unsigned char *data, size_t data_
     return WS_FRAME_COMPLETE;
 }
 
-static void ws_free_frame(struct websocket_frame *frame) {
-    if (frame->payload) {
-        free(frame->payload);
-        frame->payload = NULL;
-    }
-}
-
-static void ws_send_frame(int client_fd, const char *message, uint8_t opcode) {
+static int ws_send_frame(int client_fd, const char *message, int length, uint8_t opcode) {
     unsigned char frame[1024];
-    size_t message_len = strlen(message);
+    size_t message_len = length;
     size_t offset = 0;
 
     frame[offset++] = 0x80 | opcode;
@@ -223,42 +238,139 @@ static void ws_send_frame(int client_fd, const char *message, uint8_t opcode) {
         frame[offset++] = message_len & 0xFF;
     } else {
         fprintf(stderr, "Message too large\n");
-        return;
+        return -1; 
     }
 
     memcpy(&frame[offset], message, message_len);
     offset += message_len;
 
     send(client_fd, frame, offset, 0);
+
+    return 0;
 }
 
-static void ws_handle_websocket_frames(int client_fd) {
+static void ws_free_frame(struct websocket_frame *frame){
+    if (frame->payload) free(frame->payload);
+    frame->payload = NULL;
+}
+
+static void ws_handle_websocket_frames(struct websocket *ws, struct ws_info *info) {
+    if (!ws || !info) return;
+
     unsigned char buffer[2048];
-    ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
+    ssize_t received = recv(ws->client_fd, buffer, sizeof(buffer), 0);
     if (received <= 0) {
         perror("Connection closed or error");
+        if (info->on_close) info->on_close(ws);
+        ws_container_destroy(ws_container_find(ws->client_fd));
         return;
     }
 
     struct websocket_frame frame;
     ws_frame_status_t status = ws_decode_frame(buffer, received, &frame);
     if (status == WS_FRAME_COMPLETE) {
-        printf("Received WebSocket frame: Opcode=%d, Payload=%.*s\n",
-               frame.opcode, (int)frame.payload_len, frame.payload);
-
-        ws_send_frame(client_fd, (const char *)frame.payload, frame.opcode);
+        if (frame.opcode == WS_OPCODE_CLOSE) {
+            if (info->on_close) info->on_close(ws);
+            ws_close(ws);
+        } else if (frame.opcode == WS_OPCODE_TEXT) {
+            if (info->on_message) info->on_message(ws, (const char *)frame.payload, frame.payload_len);
+        } else if (frame.opcode == WS_OPCODE_PING) {
+            ws_send_frame(ws->client_fd, (const char *)frame.payload, frame.payload_len, WS_OPCODE_PONG);
+        }
         ws_free_frame(&frame);
     } else if (status == WS_FRAME_ERROR) {
         fprintf(stderr, "Error decoding WebSocket frame\n");
     }
 }
 
-void ws_handle_client(int client_fd, struct http_request *req) {
+void ws_force_close(struct ws_info *info) {
+    if (!info) return;
+
+    pthread_mutex_lock(&ws_container_list_mutex);
+    LIST_FOREACH(ws_container_list, node) {
+        struct ws_container *container = node->data;
+        if (container->info == info) {
+            printf("Forcing close of WebSocket %d\n", container->ws->client_fd);
+            event_del(container->ev);
+            close(container->ws->client_fd);
+            free(container->ws);
+            free(container);
+        }
+    }
+    pthread_mutex_unlock(&ws_container_list_mutex);
+}
+
+static int ws_send(struct websocket *ws, const char *message, size_t length) {
+    return ws_send_frame(ws->client_fd, message, length, WS_OPCODE_TEXT);
+}
+
+static int ws_close(struct websocket *ws) {
+    return ws_send_frame(ws->client_fd, NULL, 0, WS_OPCODE_CLOSE);
+}
+
+static void* ws_event_thread(void* args) {
+    (void)args;
+    event_dispatch();
+    return NULL;
+}
+
+int http_is_websocket_upgrade(struct http_request *req) {
+    const char *connection = map_get(req->headers, "Connection");
+    const char *upgrade = map_get(req->headers, "Upgrade");
+    
+    if (connection && upgrade && strstr(connection, "Upgrade") && strcmp(upgrade, "websocket") == 0) {
+        return 1;
+    }
+    
+    return 0;
+}
+
+void ws_handle_client(int sd, struct http_request *req, struct http_response *res, struct ws_info *info) {
     printf("Upgrading connection to WebSocket\n");
-    ws_handle_upgrade(client_fd, req);
-    while (req->websocket) {
-        ws_handle_websocket_frames(client_fd);
+
+    const char *client_key = map_get(req->headers, "Sec-WebSocket-Key");
+    if (!client_key) {
+        fprintf(stderr, "Missing Sec-WebSocket-Key header\n");
+        res->status = HTTP_400_BAD_REQUEST;
+        return;
     }
 
-    close(client_fd);
+    req->websocket = 1;
+
+    struct ws_container *container = ws_container_create(sd, info);
+    if (!container) {
+        fprintf(stderr, "Failed to create WebSocket container\n");
+        res->status = HTTP_500_INTERNAL_SERVER_ERROR;
+        return;
+    }
+
+    if (info->on_open){
+        info->on_open(container->ws);
+    }
+
+    event_add(container->ev);
+
+    /* Freed by main server */
+    char* accept_key = malloc(128);
+    if(!accept_key) {
+        perror("Failed to allocate memory for accept key");
+        res->status = HTTP_500_INTERNAL_SERVER_ERROR;
+        return;
+    }
+    ws_compute_accept_key(client_key, accept_key);
+
+    res->status = HTTP_101_SWITCHING_PROTOCOLS;
+    map_insert(res->headers, "Sec-WebSocket-Accept", accept_key);
+    map_insert(res->headers, "Upgrade", "websocket");
+    map_insert(res->headers, "Connection", "Upgrade");
+    res->body[0] = '\0';
+}
+
+static pthread_t ws_thread;
+__attribute__((constructor)) void ws_constructor() {
+    pthread_create(&ws_thread, NULL, ws_event_thread, NULL);
+}
+
+__attribute__((destructor)) void ws_destructor() {
+    pthread_cancel(ws_thread);
 }

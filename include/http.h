@@ -20,6 +20,7 @@ typedef enum http_method {
 extern const char *http_methods[];
 
 typedef enum http_error {
+    HTTP_101_SWITCHING_PROTOCOLS,
     HTTP_200_OK,
     HTTP_302_FOUND,
     HTTP_400_BAD_REQUEST,
@@ -52,11 +53,11 @@ struct websocket {
     char* session;
     int client_fd;
     int (*send)(struct websocket* ws, const char *message, size_t length);
+    int (*close)(struct websocket* ws);
 };
 
 int http_parse(const char *request, struct http_request *req);
 int http_parse_data(struct http_request *req);  
 int http_is_websocket_upgrade(struct http_request *req);
-void ws_handle_client(int client_fd, struct http_request *req);
 
 #endif // HTTP_H

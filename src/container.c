@@ -33,7 +33,7 @@ static void* container_get(const char *name) {
 }
 
 __attribute__((constructor)) static void container_init() {
-    internal_container.data = map_create(10);
+    internal_container.data = map_create(32);
     printf("[STARTUP] Container initialized\n");
 }
 

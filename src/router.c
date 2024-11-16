@@ -9,6 +9,9 @@
 #define MODULE_TAG "config"
 #define ROUTE_FILE "modules/routes.dat"
 
+/* Routes depends on this function from ws */
+void ws_force_close(struct ws_info *info);
+
 struct route_disk_header {
     char magic[5];
     int count;
@@ -42,18 +45,50 @@ struct route route_find(char *route, char *method) {
     return (struct route){0};
 }
 
+struct ws_route ws_route_find(char *route) {
+    for (int i = 0; i < gateway.count; i++) {
+        pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
+        for (int j = 0; j < gateway.entries[i].module->ws_size; j++) {
+            if (strcmp(gateway.entries[i].module->websockets[j].path, route) == 0) {
+                /* Caller is responsible for unlocking the read lock! */
+                return (struct ws_route){
+                    .info = &gateway.entries[i].module->websockets[j],
+                    .rwlock = &gateway.entries[i].rwlock
+                };
+            }
+        }
+        pthread_rwlock_unlock(&gateway.entries[i].rwlock);
+    }
+    return (struct ws_route){0};
+}
+
 static int update_gateway_entry(int index, char* so_path, struct module* routes, void* handle) {
     pthread_rwlock_wrlock(&gateway.entries[index].rwlock);
 
-    if (gateway.entries[index].handle)
+    /* Close all open websocket connections */
+    for(int i = 0; gateway.entries[index].module && i < gateway.entries[index].module->ws_size; i++) {
+        ws_force_close(&gateway.entries[index].module->websockets[i]);
+    }
+
+    if (gateway.entries[index].handle){
+        if (gateway.entries[index].module->unload) {
+            gateway.entries[index].module->unload();
+        }
         dlclose(gateway.entries[index].handle);
+    }
 
     gateway.entries[index].handle = handle;
     memset(gateway.entries[index].so_path, 0, SO_PATH_MAX_LEN);
     strncpy(gateway.entries[index].so_path, so_path, SO_PATH_MAX_LEN); 
     gateway.entries[index].module = routes;
 
+    if (gateway.entries[index].module->onload) {
+        gateway.entries[index].module->onload();
+    }
+
     pthread_rwlock_unlock(&gateway.entries[index].rwlock);
+
+    printf("[INFO   ] Module %s is updated.\n", routes->name);
 
     route_save_to_disk(ROUTE_FILE);
     return 0;
@@ -74,7 +109,7 @@ static int load_from_shared_object(char* so_path){
     }
 
     struct module* module = dlsym(handle, MODULE_TAG);
-    if (!module || module->size == 0 || strnlen(module->name, 128) == 0) {
+    if (!module || strnlen(module->name, 128) == 0) {
         fprintf(stderr, "Error finding module definition: %s\n", dlerror());
         dlclose(handle);
         return -1;
@@ -95,10 +130,11 @@ static int load_from_shared_object(char* so_path){
                 return 0;
             }
 
-            printf("[INFO   ] Module %s is updated.\n", module->name);
             return update_gateway_entry(i, so_path, module, handle);
         }
     }
+
+    printf("[INFO   ] Module %s is loaded.\n", module->name);
 
     pthread_rwlock_init(&gateway.entries[gateway.count].rwlock, NULL);
     update_gateway_entry(gateway.count, so_path, module, handle);

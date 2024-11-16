@@ -33,19 +33,10 @@ curl -X POST "http://localhost:8080/mgnt" \
     -F "code=@func2.c"
 ```
 
-## New idea
-2 processes:
-1. main handling accept and management
-2. handler, running the routing calling handler
+## Websockets
+Properly close websockets
+Seemless new deployment
 
-2nd process will be "isloated" and have restricted view of filesystem
-with shared folder as root and a /tmp.
-
-Main server will create a "work queue" which the 2nd process will read from and handle.
-
-Problems:
-Thread safety? Main thread need to be able to update gatway routes, visable to 2nd.
-Make gateway with mmap.
 
 ## TODO:
 shared folder

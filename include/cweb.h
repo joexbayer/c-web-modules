@@ -7,6 +7,7 @@
 #include <scheduler.h>
 #include <db.h>
 
+
 /* Macro to export a module_t configuration */
 #define export __attribute__((visibility("default"))) const 
 
@@ -16,7 +17,7 @@ typedef enum {
 } cweb_feature_flag_t;
 
 /* Websocket information */
-typedef struct {
+typedef struct ws_info {
     const char *path;
     void (*on_open)(struct websocket *);  
     void (*on_message)(struct websocket *, const char *message, size_t length);
@@ -38,7 +39,10 @@ typedef struct module {
     route_info_t routes[10];
     int size;
     websocket_info_t websockets[10];
-    int ws_size
+    int ws_size;
+    
+    void (*onload)(void);
+    void (*unload)(void);
 } module_t;
 
 /* Exposed primitives */

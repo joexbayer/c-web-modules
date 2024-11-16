@@ -22,8 +22,14 @@ struct route {
     pthread_rwlock_t* rwlock;
 };
 
+struct ws_route {
+    struct ws_info *info;
+    pthread_rwlock_t* rwlock;
+};
+
 int route_register_module(char* so_path);
 struct route route_find(char *route, char *method);
+struct ws_route ws_route_find(char *route);
 
 /* TODO: Move... */
 int mgnt_parse_request(struct http_request *req, struct http_response *res);

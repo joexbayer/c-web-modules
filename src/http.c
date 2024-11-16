@@ -5,7 +5,7 @@
 #include <stdio.h>
 
 const char *http_methods[] = {"GET", "POST", "PUT", "DELETE"};
-const char *http_errors[] = {"200 OK", "302 Found", "400 Bad Request", "403 Forbidden", "404 Not Found", "500 Internal Server Error"};
+const char *http_errors[] = {"101 Switching Protocols", "200 OK", "302 Found", "400 Bad Request", "403 Forbidden", "404 Not Found", "500 Internal Server Error"};
 
 /* Helper function to trim trailing whitespace */
 static void trim_trailing_whitespace(char *str) {

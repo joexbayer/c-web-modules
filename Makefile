@@ -22,7 +22,7 @@ endif
 
 # Export dynamic symbols on Linux
 ifeq ($(shell uname), Linux)
-	CFLAGS += -Wl,--export-dynamic -fsanitize=thread,undefined,address,leak,bounds,memory
+	CFLAGS += -Wl,--export-dynamic -fsanitize=thread,undefined,bounds
 endif
 
 SRCS = $(wildcard $(SRC_DIR)/*.c) 
@@ -38,7 +38,7 @@ LIB_TARGET = $(LIB_DIR)/libmodule.so
 
 all: $(LIB_TARGET) $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) ${LIB_DIR}/libevent.so
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $^
 
@@ -54,9 +54,12 @@ $(BUILD_DIR)/%.o: $(LIB_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
 
+${LIB_DIR}/libevent.so: ${LIB_DIR}/libevent.c
+	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^
+
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
-	rm -f $(LIB_TARGET)
+	rm -f $(LIB_TARGET) libs/libevent.so
 
 run: all
 	$(TARGET)
