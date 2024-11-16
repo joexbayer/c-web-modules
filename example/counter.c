@@ -12,7 +12,7 @@ static const char* template =
 /* Route: /counter - Method GET */
 static int index_route(struct http_request *req, struct http_response *res) {
     snprintf(res->body, HTTP_RESPONSE_SIZE, template, counter++);
-    container->set("counter", &counter);
+    cache->set("counter", &counter);
     res->status = HTTP_200_OK;
     return 0;
 }

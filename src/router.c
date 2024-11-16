@@ -11,6 +11,7 @@
 
 /* Routes depends on this function from ws */
 void ws_force_close(struct ws_info *info);
+int ws_update_container(const char* path, struct ws_info *info);
 
 struct route_disk_header {
     char magic[5];
@@ -28,7 +29,6 @@ static int route_load_from_disk(char* filename);
 
 struct route route_find(char *route, char *method) {
     for (int i = 0; i < gateway.count; i++) {
-
         pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
         for (int j = 0; j < gateway.entries[i].module->size; j++) {
             if (strcmp(gateway.entries[i].module->routes[j].path, route) == 0 &&
@@ -65,29 +65,37 @@ struct ws_route ws_route_find(char *route) {
 static int update_gateway_entry(int index, char* so_path, struct module* routes, void* handle) {
     pthread_rwlock_wrlock(&gateway.entries[index].rwlock);
 
-    /* Close all open websocket connections */
-    for(int i = 0; gateway.entries[index].module && i < gateway.entries[index].module->ws_size; i++) {
-        ws_force_close(&gateway.entries[index].module->websockets[i]);
+    void* old_handle = gateway.entries[index].handle;
+
+    /* Unload old module */
+    if (gateway.entries[index].module && gateway.entries[index].module->unload) {
+        gateway.entries[index].module->unload();
     }
 
-    if (gateway.entries[index].handle){
-        if (gateway.entries[index].module->unload) {
-            gateway.entries[index].module->unload();
-        }
-        dlclose(gateway.entries[index].handle);
-    }
-
+    /* Update entry */
     gateway.entries[index].handle = handle;
     memset(gateway.entries[index].so_path, 0, SO_PATH_MAX_LEN);
     strncpy(gateway.entries[index].so_path, so_path, SO_PATH_MAX_LEN); 
     gateway.entries[index].module = routes;
 
+    /* Update all websocket connections */
+    for(int i = 0; gateway.entries[index].module && i < gateway.entries[index].module->ws_size; i++) {
+        //ws_force_close(&gateway.entries[index].module->websockets[i]);
+        printf("Updating websocket %s\n", gateway.entries[index].module->websockets[i].path);
+        ws_update_container(gateway.entries[index].module->websockets[i].path, &gateway.entries[index].module->websockets[i]);
+    }
+
+    /* Close old handle */
+    if (old_handle){
+        dlclose(old_handle);
+    }
+
+    /* Load new module */
     if (gateway.entries[index].module->onload) {
         gateway.entries[index].module->onload();
     }
-
+    
     pthread_rwlock_unlock(&gateway.entries[index].rwlock);
-
     printf("[INFO   ] Module %s is updated.\n", routes->name);
 
     route_save_to_disk(ROUTE_FILE);
@@ -140,7 +148,6 @@ static int load_from_shared_object(char* so_path){
     update_gateway_entry(gateway.count, so_path, module, handle);
     gateway.count++;
 
-    printf("[INFO   ] Module %s is loaded.\n", module->name);
     route_save_to_disk(ROUTE_FILE);
 
     return 0;
@@ -155,7 +162,9 @@ void route_cleanup() {
         pthread_rwlock_wrlock(&gateway.entries[i].rwlock);
         dlclose(gateway.entries[i].handle);
         pthread_rwlock_unlock(&gateway.entries[i].rwlock);
+        pthread_rwlock_destroy(&gateway.entries[i].rwlock);
     }
+    
 }
 
 static int route_save_to_disk(char* filename) {

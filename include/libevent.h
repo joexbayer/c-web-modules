@@ -22,6 +22,7 @@ void event_free(struct event  *event);
 int event_add(struct event  *event);
 int event_del(struct event  *event);
 void event_dispatch(void);
+void event_dispatch_stop(void);
 
 #ifdef __cplusplus
 }

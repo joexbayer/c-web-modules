@@ -8,7 +8,7 @@
 <body>
     <h1>WebSocket Test Page</h1>
     <label for="ws-url">WebSocket URL:</label>
-    <input type="text" id="ws-url" value="ws://localhost:8080" />
+    <input type="text" id="ws-url" value="ws://localhost:8080/websocket" />
     <button id="connect-btn">Connect</button>
     <br /><br />
 
@@ -32,6 +32,12 @@
             socket.addEventListener('open', () => {
                 log(`Connected to ${url}`);
                 document.getElementById('send-btn').disabled = false;
+                setInterval(() => {
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        const message = `Ping at ${new Date().toLocaleTimeString()}`;
+                        socket.send(message);
+                    }
+            }, 500);
             });
 
             socket.addEventListener('message', (event) => {

@@ -5,6 +5,7 @@
 #include <scheduler.h>
 #include <db.h>
 
+/* Macro loads a symbol from the "parent" and exposes it as given variable. */
 #define LOAD_SYMBOL(handle, symbol, type, var) \
     do { \
         type** var##_ptr = (type**)dlsym(handle, symbol); \
@@ -21,7 +22,7 @@
 
 struct scheduler* scheduler = NULL;
 struct sqldb *database = NULL;
-struct container* container = NULL;
+struct container* cache = NULL;
 /* Global handle to access server symbols */
 static void *dlhandle = NULL;
 
@@ -32,7 +33,7 @@ __attribute__((constructor)) void module_constructor() {
         return;
     }
 
-    LOAD_SYMBOL(dlhandle, "exposed_container", struct container, container);
+    LOAD_SYMBOL(dlhandle, "exposed_container", struct container, cache);
     LOAD_SYMBOL(dlhandle, "exposed_scheduler", struct scheduler, scheduler);
     LOAD_SYMBOL(dlhandle, "exposed_sqldb", struct sqldb, database);
 }

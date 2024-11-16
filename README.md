@@ -34,11 +34,11 @@ curl -X POST "http://localhost:8080/mgnt" \
 ```
 
 ## Websockets
-Properly close websockets
-Seemless new deployment
-
+How to deal with "dangling" paths, that were removed?
+Find difference in new module to old and remove old paths
 
 ## TODO:
+trie prefix gateway for route search.
 shared folder
 create and change cwd to tmp for modules.
 CLEANUP

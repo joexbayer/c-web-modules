@@ -6,8 +6,9 @@ static void on_open(struct websocket *ws) {
 }
 
 static void on_message(struct websocket *ws, const char *message, size_t length) {
-    printf("Received message: %.*s\n", (int)length, message);
-    ws->send(ws, message, length);
+    char response[1024];
+    snprintf(response, sizeof(response), "You: %s", message);
+    ws->send(ws, response, strlen(response));
 }
 
 static void on_close(struct websocket *ws) {

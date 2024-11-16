@@ -31,6 +31,9 @@
 
 #define DEBUG_PRINT(fmt, args...) fprintf(stderr, fmt, ## args)
 
+static int notify_pipe[2] = {-1, -1};
+static int stop_flag = 0;
+static pthread_mutex_t stop_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t event_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void lock() {
     pthread_mutex_lock(&event_mutex);
@@ -56,16 +59,32 @@ struct event_list {
 static struct event_list *events = NULL;
 
 #ifdef __linux__
-static pthread_once_t epoll_init_once = PTHREAD_ONCE_INIT; // Ensure epoll_fd is initialized only once
+static pthread_once_t epoll_init_once = PTHREAD_ONCE_INIT;
 
-static void initialize_epoll(void) {
+void initialize_epoll(void) {
     epoll_fd = epoll_create1(0);
     if (epoll_fd == -1) {
         perror("epoll creation failed");
-        exit(EXIT_FAILURE); // Fail fast if epoll initialization fails
+        exit(EXIT_FAILURE);
     }
+
+    /* Create a self pipe used to wakeup epoll on demand */
+    if (pipe(notify_pipe) == -1) {
+        perror("pipe creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    struct epoll_event ep;
+    ep.events = EPOLLIN;
+    ep.data.fd = notify_pipe[0];
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, notify_pipe[0], &ep) == -1) {
+        perror("epoll_ctl failed for pipe");
+        exit(EXIT_FAILURE);
+    }
+
     DEBUG_PRINT("epoll_fd initialized: %d\n", epoll_fd);
 }
+
 #endif
 
 /* Create a new event */
@@ -93,7 +112,7 @@ void event_free(struct event *event) {
 int event_add(struct event *ev) {
     if (!ev) return -1;
 
-    lock(); /* Lock before modifying shared resources */
+    lock();
 
 #ifdef __APPLE__
     if (kq == -1) {
@@ -144,7 +163,7 @@ int event_add(struct event *ev) {
 int event_del(struct event *ev) {
     if (!ev) return -1;
 
-    lock(); /* Lock before modifying shared resources */
+    lock();
 
 #ifdef __APPLE__
     struct kevent ke;
@@ -169,59 +188,75 @@ int event_del(struct event *ev) {
             struct event_list *to_free = *current;
             *current = (*current)->next;
             free(to_free);
-
-            DEBUG_PRINT("Event removed\n");
             unlock();
             return 0;
         }
         current = &(*current)->next;
     }
 
-    DEBUG_PRINT("Event not found\n");
-
-    unlock(); /* Unlock after modification */
-    return -1; /* Event not found */
+    unlock(); 
+    return -1;
 }
 
-/* Dispatch events */
+/* Stop the event dispatch loop */
+void event_dispatch_stop(void) {
+    pthread_mutex_lock(&stop_mutex);
+    stop_flag = 1;
+    pthread_mutex_unlock(&stop_mutex);
+
+#ifdef __linux__
+    /* Kind of a hack to alert epoll and let it shutdown gracefully... probably find a better way. */
+    if (notify_pipe[1] != -1) {
+        if (write(notify_pipe[1], "1", 1) == -1) {
+            perror("write to pipe failed");
+        }
+    }
+    DEBUG_PRINT("Stopping event dispatch\n");
+#elif __APPLE__
+    struct kevent stop_event;
+    EV_SET(&stop_event, -1, EVFILT_USER, EV_ADD | EV_ENABLE, NOTE_TRIGGER, 0, NULL);
+    kevent(kq, &stop_event, 1, NULL, 0, NULL);
+#endif
+}
+
+/* Main loop which dispatch events*/
 void event_dispatch(void) {
     DEBUG_PRINT("Starting event dispatch\n");
 
-#ifdef __APPLE__
-    struct kevent triggered_events[MAX_EVENTS];
-#elif __linux__
+#ifdef __linux__
     struct epoll_event triggered_events[MAX_EVENTS];
-
     pthread_once(&epoll_init_once, initialize_epoll);
 #endif
 
     while (1) {
-#ifdef __APPLE__
-        int n = kevent(kq, NULL, 0, triggered_events, MAX_EVENTS, NULL);
-        if (n == -1) {
-            perror("kevent dispatch failed");
+        pthread_mutex_lock(&stop_mutex);
+        if (stop_flag) {
+            pthread_mutex_unlock(&stop_mutex);
             break;
         }
-#elif __linux__
+        pthread_mutex_unlock(&stop_mutex);
+
+#ifdef __linux__
         int n = epoll_wait(epoll_fd, triggered_events, MAX_EVENTS, -1);
         if (n == -1) {
             perror("epoll_wait dispatch failed");
             break;
         }
-#endif
 
-        // Process each triggered event
+#endif
         for (int i = 0; i < n; i++) {
-#ifdef __APPLE__
-            struct event *ev = (struct event *)triggered_events[i].udata;
-#elif __linux__
-            struct event *ev = (struct event *)triggered_events[i].data.ptr;
-#endif
-            DEBUG_PRINT("Event triggered on fd %d\n", ev->fd);
+            if (triggered_events[i].data.fd == notify_pipe[0]) {
+                printf("Received stop signal\n");
+                char buf[1];
+                read(notify_pipe[0], buf, 1);
+                continue;
+            }
 
+            struct event *ev = (struct event *)triggered_events[i].data.ptr;
             if (ev && ev->callback) {
                 ev->callback(ev, ev->arg);
             }
         }
     }
+    printf("Event dispatch stopped\n");
 }

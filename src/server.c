@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include <openssl/crypto.h>
 
 #include "http.h"
 #include "router.h"
@@ -248,15 +249,11 @@ static void *thread_handle_client(void *arg) {
     char headers[4*1024] = {0};
     build_headers(&res, headers, sizeof(headers));
 
-    for(size_t i = 0; i < map_size(res.headers); i++) {
-        printf("[%ld] Response header: %s: %s\n", (long)req.tid, res.headers->entries[i].key, (char*)res.headers->entries[i].value);
-    }
-    
     char response[8*1024] = {0};
     snprintf(response, sizeof(response), "HTTP/1.1 %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
-    write(c->sockfd, response, strlen(response));
 
-    printf("[%ld] Response: %s\n", (long)req.tid, response);
+    /* TODO: Potential race condition if sockdfd is for a websocket and its destroyed (for example during shutdown...) */
+    write(c->sockfd, response, strlen(response));
 
     /* TODO FIX THIS, need to manually free this */
     char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
@@ -285,6 +282,14 @@ static void *thread_handle_client(void *arg) {
     return NULL;
 }
 
+#define INIT_OPTIONS (OPENSSL_INIT_NO_ATEXIT)
+static void openssl_init_wrapper(void) {
+    if (OPENSSL_init_crypto(INIT_OPTIONS, NULL) == 0) {
+        fprintf(stderr, "Failed to initialize OpenSSL\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
 /* Signal handler */
 static volatile sig_atomic_t stop = 0;
 static void server_signal_handler(int sig) {
@@ -295,6 +300,12 @@ static void server_signal_handler(int sig) {
 int main() {
     (void)allowed_management_commands;
     (void)allowed_ip_prefixes;
+
+    CRYPTO_ONCE openssl_once = CRYPTO_ONCE_STATIC_INIT;
+    if (!CRYPTO_THREAD_run_once(&openssl_once, openssl_init_wrapper)) {
+        fprintf(stderr, "Failed to run OpenSSL initialization\n");
+        exit(EXIT_FAILURE);
+    }
 
     printf("Starting server...\n");
     

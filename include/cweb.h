@@ -46,7 +46,7 @@ typedef struct module {
 } module_t;
 
 /* Exposed primitives */
-extern struct container* container;
+extern struct container* cache;
 extern struct scheduler* scheduler;
 extern struct sqldb* database;
 // KeyValue store
