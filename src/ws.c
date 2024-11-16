@@ -115,7 +115,7 @@ static void ws_compute_accept_key(const char *client_key, char *accept_key) {
     char combined[256];
     unsigned char sha1_result[SHA_DIGEST_LENGTH];
     snprintf(combined, sizeof(combined), "%s%s", client_key, websocket_guid);
-    
+
     SHA1((unsigned char *)combined, strlen(combined), sha1_result);
     base64_encode(sha1_result, SHA_DIGEST_LENGTH, accept_key);
 }
@@ -221,7 +221,7 @@ int ws_update_container(const char* path, struct ws_info *info) {
         struct ws_container *container = node->data;
         pthread_mutex_lock(&container->mutex);
         if (strcmp(container->path, path) == 0) {
-            printf("Updating WebSocket container %d\n", container->ws->client_fd);
+            printf("Updating WebSocket container %d: %s\n", container->ws->client_fd, container->path);
             container->info = info;
         }
         pthread_mutex_unlock(&container->mutex);
