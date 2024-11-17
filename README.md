@@ -163,3 +163,19 @@ make run
 ```bash
 docker-compose up --build
 ```
+
+# How is c-web-modules different from Apache Modules and ISAPI Extensions?
+
+Unlike Apache modules and ISAPI extensions, which are tightly integrated into the server and require configuration changes followed by a server restart or reload, **c-web-modules** offers true runtime flexibility.
+
+**Key Differences:**
+- **Dynamic Deployment**:  
+  c-web-modules allows you to upload raw C code directly to the server, which compiles and integrates it into the running application without restarts. Neither Apache modules nor ISAPI extensions support this level of runtime modification.
+
+- **Module Isolation**:  
+  Each module in c-web-modules is independently managed, minimizing the risk of crashing the entire server.
+
+- **WebSocket Updates**:  
+  WebSocket handlers can be updated at runtime without breaking existing connections, a feature not typically available in Apache modules or ISAPI.
+
+This makes **c-web-modules** more suitable for rapid experimentation and modular design, especially in scenarios requiring frequent updates without disrupting service.
