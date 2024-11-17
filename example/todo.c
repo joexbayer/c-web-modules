@@ -82,12 +82,19 @@ int add_todo_route(struct http_request *req, struct http_response *res) {
     return 0;
 }
 
+void unload() {
+    for (int i = 0; i < list_count; i++) {
+        free((void*)list[i]);
+    }
+}
+
 export module_t config = {
     .name = "todo",
     .author = "cweb",
     .size = 2,
     .routes = {
-        {"/", "GET", index_route, FEATURE_FLAG_NONE},
-        {"/add", "POST", add_todo_route, FEATURE_FLAG_NONE},
-    }
+        {"/", "GET", index_route, NONE},
+        {"/add", "POST", add_todo_route, NONE},
+    },
+    .unload = unload,
 };

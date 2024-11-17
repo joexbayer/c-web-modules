@@ -76,7 +76,9 @@ struct connection {
 //     return 0;
 // }
 
+/* TODO: Ugly fix to allow server access to these.. */
 void ws_handle_client(int sd, struct http_request *req, struct http_response *res, struct ws_info *ws_module_info);
+int ws_confirm_open(int sd);
 
 static struct connection server_init(uint16_t port) {
     struct connection s;
@@ -193,14 +195,36 @@ static void build_headers(struct http_response *res, char *headers, int headers_
     }
 }
 
+static void measure_time(struct timespec *start, struct timespec *end, double *time_taken) {
+    clock_gettime(CLOCK_MONOTONIC, end);
+    *time_taken = (end->tv_sec - start->tv_sec) * 1e9;
+    *time_taken = (*time_taken + (end->tv_nsec - start->tv_nsec)) * 1e-9;
+}
+
+static void clean_up(struct http_request *req, struct http_response *res) {
+    if (req->body) free(req->body);
+
+    for (size_t i = 0; i < map_size(req->params); i++) {
+        free(req->params->entries[i].value);
+    }
+    map_destroy(req->params);
+
+    for (size_t i = 0; i < map_size(req->headers); i++) {
+        free(req->headers->entries[i].value);
+    }
+    map_destroy(req->headers);
+    map_destroy(req->data);
+    map_destroy(res->headers);
+}
+
 static void *thread_handle_client(void *arg) {
     struct connection *c = (struct connection *)arg;
 
-    /* Measure time */
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    /* Read in HTTP header */
+    printf("[%ld] Handling client %d\n", (long)pthread_self(), c->sockfd);
+
     char buffer[8*1024] = {0};
     int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
     if (read_size <= 0) {
@@ -211,20 +235,20 @@ static void *thread_handle_client(void *arg) {
     buffer[read_size] = '\0';
 
     struct http_request req;
-    req.tid = pthread_self(); /* store threadid */
+    req.tid = pthread_self();
+
     http_parse(buffer, &req);
 
-    /* Make sure entire request is read. TODO: Cant do this for huge requests.. */
     while (req.content_length > read_size) {
         read_size += read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
         buffer[read_size] = '\0';
     }
     req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
 
-    /* Parse potential data in the body (like form data) */
     http_parse_data(&req);
 
-    /* Prepare response */
+    printf("[%ld] %d Request:\n", (long)req.tid, req.content_length);
+
     struct http_response res;
     res.headers = map_create(32);
     if (res.headers == NULL) {
@@ -234,7 +258,6 @@ static void *thread_handle_client(void *arg) {
         return NULL;
     }
 
-    /* Memory allocated for body with malloc */
     res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
     if (res.body == NULL) {
         perror("Error allocating memory for response body");
@@ -243,42 +266,37 @@ static void *thread_handle_client(void *arg) {
         return NULL;
     }
 
-    /* Handle gateway requests */
     gateway(c->sockfd, &req, &res);
 
     char headers[4*1024] = {0};
     build_headers(&res, headers, sizeof(headers));
+    if (!req.websocket) {
+        map_insert(res.headers, "Connection", "close");
+    }
 
     char response[8*1024] = {0};
-    snprintf(response, sizeof(response), "HTTP/1.1 %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
-
-    /* TODO: Potential race condition if sockdfd is for a websocket and its destroyed (for example during shutdown...) */
+    snprintf(response, sizeof(response), HTTP_VERSION" %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
     write(c->sockfd, response, strlen(response));
 
-    /* TODO FIX THIS, need to manually free this */
-    char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
-    if(ac) free(ac);
-
-    /* Clean up */
-    if(req.body) free(req.body);
-    map_destroy(req.params);
-    map_destroy(req.headers);
-    map_destroy(req.data);
-    map_destroy(res.headers);
-
-    /* Dont close connection if its a websocket */
-    if(!req.websocket) {
-        printf("[%ld] Closing connection (not a websocket)\n", (long)req.tid);
-        close(c->sockfd);
-    }
-    free(c);
-    free(res.body);
-
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    double time_taken = (end.tv_sec - start.tv_sec) * 1e9;
-    time_taken = (time_taken + (end.tv_nsec - start.tv_nsec)) * 1e-9;
+    double time_taken;
+    measure_time(&start, &end, &time_taken);
 
     printf("[%ld] Request %s %s took %f seconds\n", (long)req.tid, http_methods[req.method], req.path, time_taken);
+
+    char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
+    if (ac) free(ac);
+
+    clean_up(&req, &res);
+
+    if (!req.websocket) {
+        printf("[%ld] Closing connection (not a websocket)\n", (long)req.tid);
+        close(c->sockfd);
+    } else {
+        ws_confirm_open(c->sockfd);
+    }
+
+    free(c);
+    free(res.body);
     return NULL;
 }
 
@@ -293,7 +311,7 @@ static void openssl_init_wrapper(void) {
 /* Signal handler */
 static volatile sig_atomic_t stop = 0;
 static void server_signal_handler(int sig) {
-    (void)sig;
+(void)sig;
     stop = 1;
 }
 
@@ -337,6 +355,7 @@ int main() {
         }
         pthread_detach(thread);
     }
+
 
     close(s.sockfd);
     printf("Server shutting down gracefully.\n");

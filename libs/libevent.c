@@ -29,7 +29,7 @@
 
 #include "libevent.h"
 
-#define DEBUG_PRINT(fmt, args...) fprintf(stderr, fmt, ## args)
+#define DEBUG_PRINT(fmt, args...) printf(fmt, ## args)
 
 static int notify_pipe[2] = {-1, -1};
 static int stop_flag = 0;

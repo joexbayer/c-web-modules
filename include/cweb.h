@@ -7,13 +7,15 @@
 #include <scheduler.h>
 #include <db.h>
 
+/* Third party json parser */
+#include <jansson.h>
 
 /* Macro to export a module_t configuration */
 #define export __attribute__((visibility("default"))) const 
 
 typedef int (*entry_t)(struct http_request *, struct http_response *);
 typedef enum {
-    FEATURE_FLAG_NONE = 0,
+    NONE = 0,
 } cweb_feature_flag_t;
 
 /* Websocket information */

@@ -33,8 +33,10 @@ int write_and_compile(const char *filename, const char *code, char *error_buffer
     fprintf(fp, "%s", code);
     fclose(fp);
 
+    #define LIBS "-L./libs -lmodule -ljansson"
+
     char command[SO_PATH_MAX_LEN * 2 + 200];
-    snprintf(command, sizeof(command), "gcc -fPIC -L./libs -lmodule -shared -I./include -o %s %s 2>&1", so_path, source_path);
+    snprintf(command, sizeof(command), "gcc -fPIC "LIBS" -shared -I./include -o %s %s 2>&1", so_path, source_path);
 
     FILE *gcc_output = popen(command, "r");
     if (gcc_output == NULL) {

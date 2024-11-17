@@ -31,7 +31,7 @@ struct route route_find(char *route, char *method) {
     for (int i = 0; i < gateway.count; i++) {
         pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
         for (int j = 0; j < gateway.entries[i].module->size; j++) {
-            if (strcmp(gateway.entries[i].module->routes[j].path, route) == 0 &&
+            if (strcmp(route, gateway.entries[i].module->routes[j].path) == 0 &&
                 strcmp(gateway.entries[i].module->routes[j].method, method) == 0) {
                 /* Caller is responsible for unlocking the read lock! */
                 return (struct route){
@@ -74,8 +74,6 @@ static int update_gateway_entry(int index, char* so_path, struct module* routes,
 
     /* Update entry */
     gateway.entries[index].handle = handle;
-    memset(gateway.entries[index].so_path, 0, SO_PATH_MAX_LEN);
-    strncpy(gateway.entries[index].so_path, so_path, SO_PATH_MAX_LEN); 
     gateway.entries[index].module = routes;
 
     /* Update all websocket connections */
@@ -87,8 +85,12 @@ static int update_gateway_entry(int index, char* so_path, struct module* routes,
 
     /* Close old handle */
     if (old_handle){
+        unlink(gateway.entries[index].so_path);
         dlclose(old_handle);
     }
+    
+    memset(gateway.entries[index].so_path, 0, SO_PATH_MAX_LEN);
+    strncpy(gateway.entries[index].so_path, so_path, SO_PATH_MAX_LEN); 
 
     /* Load new module */
     if (gateway.entries[index].module->onload) {
@@ -97,8 +99,6 @@ static int update_gateway_entry(int index, char* so_path, struct module* routes,
     
     pthread_rwlock_unlock(&gateway.entries[index].rwlock);
     printf("[INFO   ] Module %s is updated.\n", routes->name);
-
-    route_save_to_disk(ROUTE_FILE);
     return 0;
 }
 static void* load_shared_object(char* so_path){
@@ -148,8 +148,6 @@ static int load_from_shared_object(char* so_path){
     update_gateway_entry(gateway.count, so_path, module, handle);
     gateway.count++;
 
-    route_save_to_disk(ROUTE_FILE);
-
     return 0;
 }
 
@@ -181,8 +179,10 @@ static int route_save_to_disk(char* filename) {
         .count = gateway.count
     };
     fwrite(&header, sizeof(struct route_disk_header), 1, fp);
+    printf("Saving %d routes\n", gateway.count);
 
     for (int i = 0; i < gateway.count; i++) {
+        printf("Saving %s\n", gateway.entries[i].so_path);
         fwrite(gateway.entries[i].so_path, SO_PATH_MAX_LEN, 1, fp);
     }
 
@@ -192,6 +192,7 @@ static int route_save_to_disk(char* filename) {
 }
 
 static int route_load_from_disk(char* filename) {
+    pthread_mutex_lock(&save_mutex);
     FILE *fp = fopen(filename, "rb");
     if (fp == NULL) {
         perror("Error opening route file");
@@ -213,6 +214,7 @@ static int route_load_from_disk(char* filename) {
     }
 
     fclose(fp);
+    pthread_mutex_unlock(&save_mutex);
     return 0;
 }
 

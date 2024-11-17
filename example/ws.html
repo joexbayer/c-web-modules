@@ -32,12 +32,12 @@
             socket.addEventListener('open', () => {
                 log(`Connected to ${url}`);
                 document.getElementById('send-btn').disabled = false;
-                setInterval(() => {
-                    if (socket && socket.readyState === WebSocket.OPEN) {
-                        const message = `Ping at ${new Date().toLocaleTimeString()}`;
-                        socket.send(message);
-                    }
-            }, 500);
+                // setInterval(() => {
+                //     if (socket && socket.readyState === WebSocket.OPEN) {
+                //         const message = `Ping at ${new Date().toLocaleTimeString()}`;
+                //         socket.send(message);
+                //     }
+                // }, 500);
             });
 
             socket.addEventListener('message', (event) => {

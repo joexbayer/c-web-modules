@@ -1,11 +1,20 @@
 # Use the official Debian minimal image
 FROM debian:latest
 
-RUN apt-get update && apt-get install libssl-dev
-RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+# Install necessary packages
+RUN apt-get update && apt-get install -y \
+    libssl-dev \
+    libsqlite3-dev \
+    libjansson-dev \
+    make \
+    gcc \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
 WORKDIR /app
 COPY . /app
+EXPOSE 8080
 
-CMD ["make", "run"]
+RUN make
+
+CMD ["./bin/cweb"]
