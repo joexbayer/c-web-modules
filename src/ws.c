@@ -71,7 +71,9 @@ __attribute__((destructor)) void ws_destroy() {
     LIST_FOREACH(ws_container_list, node) {
         struct ws_container *container = node->data;
         pthread_mutex_lock(&container->mutex);
-        printf("Destroying WebSocket container %d: %s\n", container->ws->client_fd, container->path);
+
+        //printf("Destroying WebSocket container %d: %s\n", container->ws->client_fd, container->path);
+        
         event_del(container->ev);
         close(container->ws->client_fd);
         free(container->ws);
@@ -119,7 +121,7 @@ static void ws_compute_accept_key(const char *client_key, char *accept_key) {
     char combined[256];
 
     if (client_key_len + guid_len >= sizeof(combined)) {
-        fprintf(stderr, "Client key and GUID combination too long\n");
+        fprintf(stderr, "[ERROR] Client key and GUID combination too long\n");
         return;
     }
 
@@ -188,7 +190,6 @@ static int ws_container_destroy(struct ws_container *container) {
 
     free(container);
 
-    printf("WebSocket container destroyed\n");
     return 0;
 }
 
@@ -231,7 +232,7 @@ int ws_update_container(const char* path, struct ws_info *info) {
         struct ws_container *container = node->data;
         pthread_mutex_lock(&container->mutex);
         if (strcmp(container->path, path) == 0) {
-            printf("Updating WebSocket container %d: %s\n", container->ws->client_fd, container->path);
+            //printf("Updating WebSocket container %d: %s\n", container->ws->client_fd, container->path);
             container->info = info;
         }
         pthread_mutex_unlock(&container->mutex);
@@ -295,7 +296,7 @@ static int ws_send_frame(int client_fd, const char *message, int length, uint8_t
         frame[offset++] = (message_len >> 8) & 0xFF;
         frame[offset++] = message_len & 0xFF;
     } else {
-        fprintf(stderr, "Message too large\n");
+        fprintf(stderr, "[ERROR] Message too large\n");
         return -1; 
     }
 
@@ -356,10 +357,10 @@ static void ws_handle_frames(struct ws_container container[static 1]) {
         }
         ws_free_frame(&frame);
     } else if (status == WS_FRAME_ERROR) {
-        fprintf(stderr, "Error decoding WebSocket frame\n");
+        fprintf(stderr, "[ERROR] Error decoding WebSocket frame\n");
         ws_free_frame(&frame);
     } else {
-        fprintf(stderr, "Incomplete WebSocket frame\n");
+        fprintf(stderr, "[ERROR] Incomplete WebSocket frame\n");
         ws_free_frame(&frame);
     }
     pthread_mutex_unlock(&container->mutex);
@@ -372,7 +373,6 @@ void ws_force_close(struct ws_info *info) {
     LIST_FOREACH(ws_container_list, node) {
         struct ws_container *container = node->data;
         if (container->info == info) {
-            printf("Forcing close of WebSocket %d\n", container->ws->client_fd);
             event_del(container->ev);
             close(container->ws->client_fd);
             free(container->ws);
@@ -420,24 +420,24 @@ int ws_confirm_open(int sd){
 }
 
 void ws_handle_client(int sd, struct http_request *req, struct http_response *res, struct ws_info *info) {
-    printf("Upgrading connection to WebSocket %d\n", sd);
+    printf("[WS] Upgrading connection to WebSocket %d\n", sd);
 
     const char *client_key = map_get(req->headers, "Sec-WebSocket-Key");
     if (!client_key) {
-        fprintf(stderr, "Missing Sec-WebSocket-Key header\n");
+        fprintf(stderr, "[ERROR] Missing Sec-WebSocket-Key header\n");
         res->status = HTTP_400_BAD_REQUEST;
         return;
     }
 
     struct ws_container *container = ws_container_create(sd, info, req->path);
     if (!container) {
-        fprintf(stderr, "Failed to create WebSocket container\n");
+        fprintf(stderr, "[ERROR] Failed to create WebSocket container\n");
         res->status = HTTP_500_INTERNAL_SERVER_ERROR;
         return;
     }
 
     if(event_add(container->ev) < 0) {
-        fprintf(stderr, "Failed to add event to event loop\n");
+        fprintf(stderr, "[ERROR] Failed to add event to event loop\n");
         ws_container_destroy(container);
         res->status = HTTP_500_INTERNAL_SERVER_ERROR;
         return;
@@ -446,7 +446,7 @@ void ws_handle_client(int sd, struct http_request *req, struct http_response *re
     /* Freed by main server */
     char* accept_key = malloc(128);
     if(!accept_key) {
-        perror("Failed to allocate memory for accept key");
+        perror("[ERROR] Failed to allocate memory for accept key");
         res->status = HTTP_500_INTERNAL_SERVER_ERROR;
         return;
     }
@@ -463,10 +463,11 @@ void ws_handle_client(int sd, struct http_request *req, struct http_response *re
 static pthread_t ws_thread;
 __attribute__((constructor)) void ws_constructor() {
     pthread_create(&ws_thread, NULL, ws_event_thread, NULL);
+    printf("[WS] WebSocket thread started\n");
 }
 
 __attribute__((destructor)) void ws_destructor() {
-    printf("Shutting down WebSocket thread\n");
+    printf("[WS] Shutting down WebSocket thread\n");
 
     event_dispatch_stop();
     pthread_join(ws_thread, NULL);

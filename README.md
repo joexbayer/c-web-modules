@@ -1,21 +1,32 @@
-# c-web-modules: Kernel Modules for the Web  
+# c-web-modules: Modules for the Web  
+
+> **Note:**  
+> This project is currently a **proof of concept** and represents the **bare minimum viable product (MVP)**.  
+> It is not designed for production use, and there may be bugs, limitations, or incomplete features.  
+> Use at your own discretion, and feel free to co
 
 Welcome to **c-web-modules**, a modular and efficient approach to web development in C. Inspired by kernel modules and AWS Lambda, this project allows you to upload C code directly to the server, which compiles and deploys it at runtime. No precompilation is necessary, and the server can easily be upgraded to include more features or external libraries.
 
----
+## Addressing the Challenges of C for Web Development  
 
-## What is c-web-modules?  
+C isn’t typically the go-to for web development, and there are valid reasons why. Here’s how **c-web-modules** tackles some of the common concerns:  
 
-c-web-modules is a C-based web server with a modular architecture:  
+1. **Slow Build Cycles**:  
+   Instead of recompiling the entire application, **c-web-modules** allows you to upload raw C code. The server compiles it on-the-fly, enabling rapid iteration and eliminating the need for restarts. This is as close to "hot reloading" as you can get with C.  
 
-- **Upload Raw Code**: Write your C code locally and upload it to the server, which compiles it into a module.  
-- **Runtime Module Deployment**: Add or update features on the server without restarting or touching the main server code.  
-- **Expandable Server**: The server supports additional features and external libraries out of the box.  
+2. **Speed vs. Practicality**:  
+   While raw computation speed might not always be critical for web apps, **c-web-modules** shines in scenarios where performance matters, like handling heavy data processing or real-time applications. Modules let you inject optimized performance-critical code where it’s needed.  
 
-Currently supported external libraries:  
-- **OpenSSL**: Currently only for hashing, but later for secure communication.  
-- **SQLite3**: Shared by all modules for lightweight database needs.  
-- **Jansson**: For easy JSON parsing and manipulation.  
+3. **Manpower and Time-to-Market**:  
+   By automating common server tasks (e.g., routing, module integration, and shared resources like SQLite3), **c-web-modules** reduces boilerplate and accelerates development compared to starting from scratch. It's not as fast as scripting languages, but it's far from the manual grind of traditional C projects.  
+
+4. **Memory Management and Crashes**:  
+   Modules are isolated and dynamically managed, reducing the risk of crashing the entire server. While C still requires careful memory management, the modular approach lets you focus on smaller, manageable pieces of functionality rather than tackling a monolithic application.  
+
+5. **Pre-Made Solutions**:  
+   By supporting external libraries like SQLite3, OpenSSL, and Jansson out of the box, **c-web-modules** leverages existing solutions, allowing developers to skip reinventing the wheel and focus on their application's unique needs.  
+
+This isn’t a silver bullet—it’s a proof of concept. But **c-web-modules** aims to bring C’s raw power into the web world in a more developer-friendly way.  
 
 ---
 
@@ -23,6 +34,16 @@ Currently supported external libraries:
 
 Here’s a simple example of a module that keeps track of a counter and returns its value every time you visit `/counter`.
 See more examples in the `example/` folder.
+
+[Websocket](example/websocket.c)
+
+[Chat application](example/chat.c)
+
+[JSON](example/json.c)
+
+[TODO App](example/todo.c)
+
+SQLite3 App (TODO)
 
 #### `counter.c`  
 ```c
@@ -66,11 +87,17 @@ export module_t config = {
 5. **WebSocket Support**: Even when modules are updated, existing WebSocket connections remain alive.  
 6. **Built-In Features**: Includes a cross-module cache and scheduler for deferred tasks.  
 
+Currently supported external libraries:  
+- **OpenSSL**: Currently only for hashing, but later for secure communication.  
+- **SQLite3**: Shared by all modules for lightweight database needs.  
+- **Jansson**: For easy JSON parsing and manipulation.  
+
 ---
 
 # Deployment  
 
-Deploying code to the server is simple and can be done in multiple ways, depending on your workflow.  
+Deploying code to the server is simple and can be done in multiple ways, depending on your workflow.
+
 
 ### 1. Basic Deployment with `curl`  
 
@@ -131,3 +158,8 @@ make
 make run
 ```
 
+## Docker
+
+```bash
+docker-compose up --build
+```

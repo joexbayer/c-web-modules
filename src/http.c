@@ -175,7 +175,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
     }
     *version_end = '\0';
     if (strncmp(cursor, HTTP_VERSION, strlen(HTTP_VERSION)) != 0) {
-        printf("Invalid HTTP version %s. %s supported.\n", cursor, HTTP_VERSION);
+        printf("[ERROR] Invalid HTTP version %s. %s supported.\n", cursor, HTTP_VERSION);
         req->method = -1;
     }
 
@@ -236,7 +236,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
 static int http_parse_content_type(const struct http_request *req, char **boundary) {
     const char *content_type = map_get(req->headers, "Content-Type");
     if (content_type == NULL) {
-        fprintf(stderr, "Content-Type header not found\n");
+        fprintf(stderr, "[ERROR] Content-Type header not found\n");
         return -1;
     }
 
@@ -244,13 +244,13 @@ static int http_parse_content_type(const struct http_request *req, char **bounda
     const char *boundary_prefix = "boundary=";
     *boundary = strstr(content_type, boundary_prefix);
     if (*boundary == NULL) {
-        fprintf(stderr, "Boundary not found in Content-Type header\n");
+        fprintf(stderr, "[ERROR] Boundary not found in Content-Type header\n");
         return -1;
     }
 
     *boundary += strlen(boundary_prefix);
     if (**boundary == '\0') {
-        fprintf(stderr, "Boundary value is empty\n");
+        fprintf(stderr, "[ERROR] Boundary value is empty\n");
         return -1;
     }
 
@@ -267,13 +267,13 @@ static int http_parse_content_type(const struct http_request *req, char **bounda
 static int http_extract_multipart_form_data(const char *body, const char *boundary, struct map *form_data) {
     char *boundary_start = strstr(body, boundary);
     if (boundary_start == NULL) {
-        fprintf(stderr, "Boundary not found in body\n");
+        fprintf(stderr, "[ERROR] Boundary not found in body\n");
         return -1;
     }
 
     char *boundary_end = strstr(boundary_start, boundary);
     if (boundary_end == NULL) {
-        fprintf(stderr, "Boundary end not found in body\n");
+        fprintf(stderr, "[ERROR] Boundary end not found in body\n");
         return -1;
     }
 
@@ -328,7 +328,7 @@ int http_parse_data(struct http_request *req) {
         char *boundary = NULL;
         if (http_parse_content_type(req, &boundary) == 0) {
             if (http_extract_multipart_form_data(req->body, boundary, req->data) != 0) {
-                fprintf(stderr, "Failed to extract multipart form data\n");
+                fprintf(stderr, "[ERROR] Failed to extract multipart form data\n");
                 return -1;
             }
         }
@@ -378,17 +378,5 @@ int http_parse(const char *request, struct http_request *req) {
     if (req->method == -1) {
         return -1;
     }
-
-    /* for (size_t i = 0; i < map_size(req->params); i++) { */
-    /*     const char *key = req->params->entries[i].key; */
-    /*     const char *value = req->params->entries[i].value; */
-    /*     printf("  %s: %s\n", key, value); */
-    /* } */
-    /* printf("Headers:\n"); */
-    /* for (size_t i = 0; i < map_size(req->headers); i++) { */
-    /*     const char *key = req->headers->entries[i].key; */
-    /*     const char *value = req->headers->entries[i].value; */
-    /*     printf("  %s: %s\n", key, value); */
-    /* } */
     return 0;
 }

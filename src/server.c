@@ -111,7 +111,7 @@ static struct connection server_init(uint16_t port) {
         exit(EXIT_FAILURE);
     }
 
-    printf("Server is listening on port %d\n", port);
+    printf("[SERVER] Server is listening on port %d\n", port);
     return s;
 }
 
@@ -188,7 +188,7 @@ static void build_headers(struct http_response *res, char *headers, int headers_
     for (size_t i = 0; i < map_size(headers_map); i++) {
         int written = snprintf(headers + headers_len, headers_size - headers_len, "%s: %s\r\n", headers_map->entries[i].key, (char*)headers_map->entries[i].value);
         if (written < 0 || written >= headers_size - headers_len) {
-            fprintf(stderr, "Header buffer overflow\n");
+            fprintf(stderr, "[ERROR] Header buffer overflow\n");
             break;
         }
         headers_len += written;
@@ -223,8 +223,6 @@ static void *thread_handle_client(void *arg) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    printf("[%ld] Handling client %d\n", (long)pthread_self(), c->sockfd);
-
     char buffer[8*1024] = {0};
     int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
     if (read_size <= 0) {
@@ -246,8 +244,6 @@ static void *thread_handle_client(void *arg) {
     req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
 
     http_parse_data(&req);
-
-    printf("[%ld] %d Request:\n", (long)req.tid, req.content_length);
 
     struct http_response res;
     res.headers = map_create(32);
@@ -289,7 +285,7 @@ static void *thread_handle_client(void *arg) {
     clean_up(&req, &res);
 
     if (!req.websocket) {
-        printf("[%ld] Closing connection (not a websocket)\n", (long)req.tid);
+        //printf("[%ld] Closing connection (not a websocket)\n", (long)req.tid);
         close(c->sockfd);
     } else {
         ws_confirm_open(c->sockfd);
@@ -303,7 +299,7 @@ static void *thread_handle_client(void *arg) {
 #define INIT_OPTIONS (OPENSSL_INIT_NO_ATEXIT)
 static void openssl_init_wrapper(void) {
     if (OPENSSL_init_crypto(INIT_OPTIONS, NULL) == 0) {
-        fprintf(stderr, "Failed to initialize OpenSSL\n");
+        fprintf(stderr, "[ERROR] Failed to initialize OpenSSL\n");
         exit(EXIT_FAILURE);
     }
 }
@@ -321,11 +317,9 @@ int main() {
 
     CRYPTO_ONCE openssl_once = CRYPTO_ONCE_STATIC_INIT;
     if (!CRYPTO_THREAD_run_once(&openssl_once, openssl_init_wrapper)) {
-        fprintf(stderr, "Failed to run OpenSSL initialization\n");
+        fprintf(stderr, "[ERROR] Failed to run OpenSSL initialization\n");
         exit(EXIT_FAILURE);
     }
-
-    printf("Starting server...\n");
     
     struct sigaction sa;
     sa.sa_handler = server_signal_handler;
@@ -358,7 +352,7 @@ int main() {
 
 
     close(s.sockfd);
-    printf("Server shutting down gracefully.\n");
+    printf("[SERVER] Server shutting down gracefully.\n");
 
     return 0;
 }

@@ -79,7 +79,6 @@ static int update_gateway_entry(int index, char* so_path, struct module* routes,
     /* Update all websocket connections */
     for(int i = 0; gateway.entries[index].module && i < gateway.entries[index].module->ws_size; i++) {
         //ws_force_close(&gateway.entries[index].module->websockets[i]);
-        printf("Updating websocket %s\n", gateway.entries[index].module->websockets[i].path);
         ws_update_container(gateway.entries[index].module->websockets[i].path, &gateway.entries[index].module->websockets[i]);
     }
 
@@ -104,7 +103,7 @@ static int update_gateway_entry(int index, char* so_path, struct module* routes,
 static void* load_shared_object(char* so_path){
     void* handle = dlopen(so_path, RTLD_LAZY);
     if (!handle) {
-        fprintf(stderr, "Error loading shared object: %s\n", dlerror());
+        fprintf(stderr, "[ERROR] Error loading shared object: %s\n", dlerror());
         return NULL;
     }
     return handle;
@@ -118,14 +117,14 @@ static int load_from_shared_object(char* so_path){
 
     struct module* module = dlsym(handle, MODULE_TAG);
     if (!module || strnlen(module->name, 128) == 0) {
-        fprintf(stderr, "Error finding module definition: %s\n", dlerror());
+        fprintf(stderr, "[ERROR] Error finding module definition: %s\n", dlerror());
         dlclose(handle);
         return -1;
     }
 
     /* Check if gateway is full */
     if (gateway.count >= 100) {
-        fprintf(stderr, "Gateway is full\n");
+        fprintf(stderr, "[ERROR] Gateway is full\n");
         dlclose(handle);
         return -1;
     }
@@ -179,10 +178,8 @@ static int route_save_to_disk(char* filename) {
         .count = gateway.count
     };
     fwrite(&header, sizeof(struct route_disk_header), 1, fp);
-    printf("Saving %d routes\n", gateway.count);
 
     for (int i = 0; i < gateway.count; i++) {
-        printf("Saving %s\n", gateway.entries[i].so_path);
         fwrite(gateway.entries[i].so_path, SO_PATH_MAX_LEN, 1, fp);
     }
 

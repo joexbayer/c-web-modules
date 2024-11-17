@@ -103,13 +103,13 @@ static char* hash_code(char* code) {
  */
 static int mgnt_register_module(struct http_response *req, char* code) {
     if(code == NULL ) {
-        fprintf(stderr, "Code is NULL\n");
+        fprintf(stderr, "[ERROR] Code is not provided.\n");
         return -1;
     }
 
     char* hash = hash_code(code);   
     if(hash == NULL) {
-        fprintf(stderr, "Failed to hash code\n");
+        fprintf(stderr, "[ERROR] Failed to hash code\n");
         return -1;
     }
 
@@ -117,11 +117,11 @@ static int mgnt_register_module(struct http_response *req, char* code) {
     snprintf(filename, sizeof(filename), "%s", hash);
 
     if (write_and_compile(filename, code, req->body, HTTP_RESPONSE_SIZE) == -1) {
-        fprintf(stderr, "Failed to register '%s' due to compilation error.\n", filename);
+        fprintf(stderr, "[ERROR] Failed to register '%s' due to compilation error.\n", filename);
         return -1;
     }
 
-    char so_path[SO_PATH_MAX_LEN + 12]; // 12 for / and .so
+    char so_path[SO_PATH_MAX_LEN + 12];
     snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename);
 
     free(hash);
