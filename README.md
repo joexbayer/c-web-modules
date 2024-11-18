@@ -135,7 +135,7 @@ Error messages are forwarded back to you over http.
 
 # Build it yourself!
 
-Note: MacOS support is not guarenteed!
+Note: MacOS support is not guaranteed!
 
 The project depends on:
 
