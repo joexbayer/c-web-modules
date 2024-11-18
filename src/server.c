@@ -227,9 +227,6 @@ static void thread_handle_client(void *arg) {
     struct connection *c = (struct connection *)arg;
 
     while(1){
-        struct timespec start, end;
-        clock_gettime(CLOCK_MONOTONIC, &start);
-
         char buffer[8*1024] = {0};
         int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
@@ -239,6 +236,9 @@ static void thread_handle_client(void *arg) {
             return;
         }
         buffer[read_size] = '\0';
+
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
 
         struct http_request req;
         req.tid = pthread_self();
@@ -265,7 +265,7 @@ static void thread_handle_client(void *arg) {
         struct http_response res;
         res.headers = map_create(32);
         if (res.headers == NULL) {
-            perror("Error creating map");
+            perror("[ERROR] Error creating map");
             close(c->sockfd);
             free(c);
             return;
@@ -273,7 +273,7 @@ static void thread_handle_client(void *arg) {
 
         res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
         if (res.body == NULL) {
-            perror("Error allocating memory for response body");
+            perror("[ERROR] Error allocating memory for response body");
             close(c->sockfd);
             free(c);
             return;
