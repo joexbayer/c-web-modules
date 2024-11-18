@@ -153,7 +153,7 @@ static int load_from_shared_object(char* so_path){
                 return 0;
             }
             int ret = update_gateway_entry(i, so_path, module, handle);
-            
+
             pthread_rwlock_unlock(&gateway.rwlock);
             return ret;
         }
@@ -197,6 +197,7 @@ void route_cleanup() {
 }
 
 static int route_save_to_disk(char* filename) {
+    int ret;
     pthread_mutex_lock(&save_mutex);
 
     FILE *fp = fopen(filename, "wb");
@@ -210,10 +211,22 @@ static int route_save_to_disk(char* filename) {
         .magic = "CWEB",
         .count = gateway.count
     };
-    fwrite(&header, sizeof(struct route_disk_header), 1, fp);
+    ret = fwrite(&header, sizeof(struct route_disk_header), 1, fp);
+    if(ret != 1) {
+        fprintf(stderr, "Error writing route file header\n");
+        fclose(fp);
+        pthread_mutex_unlock(&save_mutex);
+        return -1;
+    }
 
     for (int i = 0; i < gateway.count; i++) {
-        fwrite(gateway.entries[i].so_path, SO_PATH_MAX_LEN, 1, fp);
+        ret = fwrite(gateway.entries[i].so_path, SO_PATH_MAX_LEN, 1, fp);
+        if(ret != 1) {
+            fprintf(stderr, "Error writing route file entry\n");
+            fclose(fp);
+            pthread_mutex_unlock(&save_mutex);
+            return -1;
+        }
     }
 
     fclose(fp);
@@ -222,6 +235,7 @@ static int route_save_to_disk(char* filename) {
 }
 
 static int route_load_from_disk(char* filename) {
+    int ret;
     pthread_mutex_lock(&save_mutex);
     FILE *fp = fopen(filename, "rb");
     if (fp == NULL) {
@@ -231,7 +245,14 @@ static int route_load_from_disk(char* filename) {
     }
 
     struct route_disk_header header;
-    fread(&header, sizeof(struct route_disk_header), 1, fp);
+    ret = fread(&header, sizeof(struct route_disk_header), 1, fp);
+    if(ret != 1) {
+        fprintf(stderr, "Error reading route file header\n");
+        fclose(fp);
+        pthread_mutex_unlock(&save_mutex);
+        return -1;
+    }
+
     if(strcmp(header.magic, "CWEB") != 0) {
         fprintf(stderr, "Invalid route file\n");
         fclose(fp);
