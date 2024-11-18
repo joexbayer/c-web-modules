@@ -21,19 +21,26 @@ pthread_mutex_t save_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct gateway {
     struct gateway_entry entries[100];
+    pthread_rwlock_t rwlock;
     int count;
-} gateway = {0};
+} gateway = {
+    .rwlock = PTHREAD_RWLOCK_INITIALIZER,
+    .count = 0
+};
 
 static int route_save_to_disk(char* filename);
 static int route_load_from_disk(char* filename);
 
 struct route route_find(char *route, char *method) {
+
+    pthread_rwlock_rdlock(&gateway.rwlock);
     for (int i = 0; i < gateway.count; i++) {
         pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
         for (int j = 0; j < gateway.entries[i].module->size; j++) {
             if (strcmp(route, gateway.entries[i].module->routes[j].path) == 0 &&
                 strcmp(gateway.entries[i].module->routes[j].method, method) == 0) {
                 /* Caller is responsible for unlocking the read lock! */
+                pthread_rwlock_unlock(&gateway.rwlock);
                 return (struct route){
                     .route = &gateway.entries[i].module->routes[j],
                     .rwlock = &gateway.entries[i].rwlock
@@ -42,10 +49,12 @@ struct route route_find(char *route, char *method) {
         }
         pthread_rwlock_unlock(&gateway.entries[i].rwlock);
     }
+    pthread_rwlock_unlock(&gateway.rwlock);
     return (struct route){0};
 }
 
 struct ws_route ws_route_find(char *route) {
+    pthread_rwlock_rdlock(&gateway.rwlock);
     for (int i = 0; i < gateway.count; i++) {
         pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
         for (int j = 0; j < gateway.entries[i].module->ws_size; j++) {
@@ -59,6 +68,7 @@ struct ws_route ws_route_find(char *route) {
         }
         pthread_rwlock_unlock(&gateway.entries[i].rwlock);
     }
+    pthread_rwlock_unlock(&gateway.rwlock);
     return (struct ws_route){0};
 }
 
@@ -133,6 +143,8 @@ static int load_from_shared_object(char* so_path){
         return -1;
     }
 
+    pthread_rwlock_wrlock(&gateway.rwlock);
+
     /* Check if module already exists */
     for (int i = 0; i < gateway.count; i++) {
         if (strcmp(gateway.entries[i].module->name, module->name) == 0) {
@@ -140,8 +152,10 @@ static int load_from_shared_object(char* so_path){
             if(strcmp(gateway.entries[i].so_path, so_path) == 0) {
                 return 0;
             }
-
-            return update_gateway_entry(i, so_path, module, handle);
+            int ret = update_gateway_entry(i, so_path, module, handle);
+            
+            pthread_rwlock_unlock(&gateway.rwlock);
+            return ret;
         }
     }
 
@@ -152,6 +166,7 @@ static int load_from_shared_object(char* so_path){
         struct route route = route_find((char*)module->routes[i].path, (char*)module->routes[i].method);
         if (route.route) {
             pthread_rwlock_unlock(route.rwlock);
+            pthread_rwlock_unlock(&gateway.rwlock);
             fprintf(stderr, "[ERROR] Route conflict: %s %s\n", module->routes[i].method, module->routes[i].path);
             dlclose(handle);
             return -1;
@@ -161,6 +176,8 @@ static int load_from_shared_object(char* so_path){
     pthread_rwlock_init(&gateway.entries[gateway.count].rwlock, NULL);
     update_gateway_entry(gateway.count, so_path, module, handle);
     gateway.count++;
+
+    pthread_rwlock_unlock(&gateway.rwlock);
 
     return 0;
 }

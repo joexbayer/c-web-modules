@@ -21,7 +21,9 @@
 #include "map.h"
 #include "db.h"
 #include "scheduler.h"
+#include "pool.h"
 
+#define ACCEPT_BACKLOG 128
 #define MODULE_URL "/mgnt"
 
 /* Feature for later... */
@@ -50,6 +52,7 @@ struct connection {
     struct sockaddr_in address;
 };
 
+static struct thread_pool *pool;
 static int silent = 0;
 
 // static int parse_cidr(const char *cidr_str, struct cidr_prefix *result) {
@@ -107,7 +110,7 @@ static struct connection server_init(uint16_t port) {
         exit(EXIT_FAILURE);
     }
 
-    if (listen(s.sockfd, 3) < 0) {
+    if (listen(s.sockfd, ACCEPT_BACKLOG) < 0) {
         perror("Listen failed");
         close(s.sockfd);
         exit(EXIT_FAILURE);
@@ -219,7 +222,7 @@ static void clean_up(struct http_request *req, struct http_response *res) {
     free(res->body);
 }
 
-static void *thread_handle_client(void *arg) {
+static void thread_handle_client(void *arg) {
     int ret;
     struct connection *c = (struct connection *)arg;
 
@@ -233,7 +236,7 @@ static void *thread_handle_client(void *arg) {
             /* Client disconnected */
             close(c->sockfd);
             free(c);
-            return NULL;
+            return;
         }
         buffer[read_size] = '\0';
 
@@ -249,7 +252,7 @@ static void *thread_handle_client(void *arg) {
                 /* Client disconnected */
                 close(c->sockfd);
                 free(c);
-                return NULL;
+                return;
             }
 
             read_size += ret;
@@ -265,7 +268,7 @@ static void *thread_handle_client(void *arg) {
             perror("Error creating map");
             close(c->sockfd);
             free(c);
-            return NULL;
+            return;
         }
 
         res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
@@ -273,17 +276,18 @@ static void *thread_handle_client(void *arg) {
             perror("Error allocating memory for response body");
             close(c->sockfd);
             free(c);
-            return NULL;
+            return;
         }
 
         gateway(c->sockfd, &req, &res);
 
         char headers[4*1024] = {0};
-        // if (!req.websocket) {
-        //     map_insert(res.headers, "Connection", "close");
-        // }
+        /* If all threads are in use, send close */
+        if(thread_pool_is_full(pool)) {
+            map_insert(res.headers, "Connection", "close");
+        }
         build_headers(&res, headers, sizeof(headers));
-
+        
         char response[8*1024] = {0};
         snprintf(response, sizeof(response), HTTP_VERSION" %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
         ret = write(c->sockfd, response, strlen(response));
@@ -306,10 +310,16 @@ static void *thread_handle_client(void *arg) {
             ws_confirm_open(c->sockfd);
         }
 
+        if (thread_pool_is_full(pool)) {
+            close(c->sockfd);
+            free(c);
+            return;
+        }
     }
 
+    close(c->sockfd);
     free(c);
-    return NULL;
+    return;
 }
 
 #define INIT_OPTIONS (OPENSSL_INIT_NO_ATEXIT)
@@ -327,6 +337,8 @@ static void server_signal_handler(int sig) {
     stop = 1;
 }
 
+#include <unistd.h>
+
 int main(int argc, char *argv[]) {
     (void)allowed_management_commands;
     (void)allowed_ip_prefixes;
@@ -335,6 +347,9 @@ int main(int argc, char *argv[]) {
     if (argc > 1 && strcmp(argv[1], "--silent") == 0) {
         silent = 1;
     }
+
+    int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+    printf("[SERVER] Detected %d cores\n", num_cores);
 
     CRYPTO_ONCE openssl_once = CRYPTO_ONCE_STATIC_INIT;
     if (!CRYPTO_THREAD_run_once(&openssl_once, openssl_init_wrapper)) {
@@ -351,27 +366,30 @@ int main(int argc, char *argv[]) {
 
     struct connection s = server_init(8080);
 
+    /* Initialize thread pool, 2 times numbers of cores */
+    pool = thread_pool_init(num_cores*2);
+    if (pool == NULL) {
+        fprintf(stderr, "[ERROR] Failed to initialize thread pool\n");
+        return 1;
+    }
+
+    /* Main server loop */
     while (!stop) {
         struct connection *client = server_accept(s);
         if (client == NULL) {
-            if (errno == EINTR && stop) {
+            if (stop) {
                 break;
             }
             perror("Error accepting client");
             continue;
         }
 
-        pthread_t thread;
-        if (pthread_create(&thread, NULL, thread_handle_client, client) != 0) {
-            perror("Error creating thread");
-            close(client->sockfd);
-            free(client);
-            continue;
-        }
-        pthread_detach(thread);
+        /* Add client handling task to the thread pool */
+        thread_pool_add_task(pool, thread_handle_client, client);
     }
 
-
+    /* Clean up */
+    thread_pool_destroy(pool);
     close(s.sockfd);
     printf("[SERVER] Server shutting down gracefully.\n");
 
