@@ -261,7 +261,14 @@ static int route_load_from_disk(char* filename) {
 
     for (int i = 0; i < header.count; i++) {
         char so_path[SO_PATH_MAX_LEN];
-        fread(so_path, SO_PATH_MAX_LEN, 1, fp);
+        ret = fread(so_path, SO_PATH_MAX_LEN, 1, fp);
+        if(ret != 1) {
+            fprintf(stderr, "Error reading route file entry\n");
+            fclose(fp);
+            pthread_mutex_unlock(&save_mutex);
+            return -1;
+        }
+
         route_register_module(so_path);
     }
 
