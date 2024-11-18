@@ -278,7 +278,11 @@ void event_dispatch(void) {
 #ifdef __linux__
             if (triggered_events[i].data.fd == notify_pipe[0]) {
                 char buf[1];
-                read(notify_pipe[0], buf, 1);
+                int ret = read(notify_pipe[0], buf, 1);
+                if(ret == -1) {
+                    perror("read from pipe failed");
+                }
+
                 unlock();
                 continue;
             }
