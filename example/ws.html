@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebSocket Test</title>
 </head>
+
 <body>
     <h1>WebSocket Test Page</h1>
     <label for="ws-url">WebSocket URL:</label>
@@ -19,7 +21,8 @@
 
     <div>
         <strong>Log:</strong>
-        <div id="log" style="border: 1px solid #ccc; padding: 10px; width: 400px; height: 200px; overflow-y: scroll;"></div>
+        <div id="log" style="border: 1px solid #ccc; padding: 10px; width: 400px; height: 200px; overflow-y: scroll;">
+        </div>
     </div>
 
     <script>
@@ -32,12 +35,12 @@
             socket.addEventListener('open', () => {
                 log(`Connected to ${url}`);
                 document.getElementById('send-btn').disabled = false;
-                // setInterval(() => {
-                //     if (socket && socket.readyState === WebSocket.OPEN) {
-                //         const message = `Ping at ${new Date().toLocaleTimeString()}`;
-                //         socket.send(message);
-                //     }
-                // }, 500);
+                setInterval(() => {
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        const message = `Ping at ${new Date().toLocaleTimeString()}`;
+                        socket.send(message);
+                    }
+                }, 500);
             });
 
             socket.addEventListener('message', (event) => {
@@ -73,5 +76,5 @@
         }
     </script>
 </body>
-</html>
 
+</html>

@@ -13,6 +13,15 @@
 #include <openssl/sha.h>
 
 #define TMP_DIR "modules"
+#ifdef __APPLE__
+    #define CFLAGS "-fPIC -shared -I./include -I/opt/homebrew/opt/jansson/include"
+    #define LIBS "-L./libs -lmodule -L/opt/homebrew/opt/jansson/lib -ljansson"
+#elif __linux__
+    #define CFLAGS "-fPIC -shared -I./include"
+    #define LIBS "-L./libs -lmodule -ljansson"
+#else
+    #error "Unsupported platform"
+#endif
 
 /**
  * Write code to a temporary file and compile it to .so
@@ -31,12 +40,10 @@ int write_and_compile(const char *filename, const char *code, char *error_buffer
         return -1;
     }
     fprintf(fp, "%s", code);
-    fclose(fp);
-
-    #define LIBS "-L./libs -lmodule -ljansson"
+    fclose(fp);    
 
     char command[SO_PATH_MAX_LEN * 2 + 200];
-    snprintf(command, sizeof(command), "gcc -fPIC "LIBS" -shared -I./include -o %s %s 2>&1", so_path, source_path);
+    snprintf(command, sizeof(command), "gcc "LIBS" "CFLAGS"  -o %s %s 2>&1", so_path, source_path);
 
     FILE *gcc_output = popen(command, "r");
     if (gcc_output == NULL) {

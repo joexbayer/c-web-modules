@@ -33,7 +33,6 @@
 #undef DEBUG_PRINT
 #define DEBUG_PRINT(fmt, args...)
 
-static int notify_pipe[2] = {-1, -1};
 static int stop_flag = 0;
 static pthread_mutex_t stop_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t event_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -61,6 +60,7 @@ struct event_list {
 static struct event_list *events = NULL;
 
 #ifdef __linux__
+static int notify_pipe[2] = {-1, -1};
 static pthread_once_t epoll_init_once = PTHREAD_ONCE_INIT;
 
 void initialize_epoll(void) {
@@ -89,17 +89,35 @@ void initialize_epoll(void) {
 
 #endif
 
+#ifdef __APPLE__
+static pthread_once_t kqueue_init_once = PTHREAD_ONCE_INIT;
+
+void initialize_kqueue(void) {
+    kq = kqueue();
+    if (kq == -1) {
+        perror("kqueue creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    DEBUG_PRINT("kqueue initialized: %d\n", kq);
+}
+#endif
+
 /* Create a new event */
 struct event *event_new(int fd, short events, event_callback_t callback, void *arg) {
+    lock();
     struct event *ev = malloc(sizeof(struct event));
     if (!ev) {
         perror("Failed to allocate memory for event");
+        unlock();
         return NULL;
     }
     ev->fd = fd;
     ev->events = events;
     ev->callback = callback;
     ev->arg = arg;
+
+    unlock();
     return ev;
 }
 
@@ -117,14 +135,7 @@ int event_add(struct event *ev) {
     lock();
 
 #ifdef __APPLE__
-    if (kq == -1) {
-        kq = kqueue();
-        if (kq == -1) {
-            perror("kqueue creation failed");
-            unlock();
-            return -1;
-        }
-    }
+    pthread_once(&kqueue_init_once, initialize_kqueue);
 
     struct kevent ke;
     EV_SET(&ke, ev->fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, ev);
@@ -221,13 +232,20 @@ void event_dispatch_stop(void) {
 #endif
 }
 
-/* Main loop which dispatch events*/
+/* Main loop which dispatch events */
 void event_dispatch(void) {
     DEBUG_PRINT("Starting event dispatch\n");
 
 #ifdef __linux__
     struct epoll_event triggered_events[MAX_EVENTS];
     pthread_once(&epoll_init_once, initialize_epoll);
+#elif __APPLE__
+    struct kevent triggered_events[MAX_EVENTS];
+    pthread_once(&kqueue_init_once, initialize_kqueue);
+    if (kq == -1) {
+        perror("kqueue not initialized");
+        return;
+    }
 #endif
 
     while (1) {
@@ -245,20 +263,48 @@ void event_dispatch(void) {
             break;
         }
 
+#elif __APPLE__
+        int n = kevent(kq, NULL, 0, triggered_events, MAX_EVENTS, NULL);
+        if (n == -1) {
+            perror("kevent dispatch failed");
+            break;
+        }
 #endif
+
         for (int i = 0; i < n; i++) {
+            event_callback_t callback = NULL;
+            void *arg = NULL;
+            lock();
+#ifdef __linux__
             if (triggered_events[i].data.fd == notify_pipe[0]) {
                 printf("Received stop signal\n");
                 char buf[1];
                 read(notify_pipe[0], buf, 1);
+                unlock();
                 continue;
             }
 
             struct event *ev = (struct event *)triggered_events[i].data.ptr;
-            if (ev && ev->callback) {
-                ev->callback(ev, ev->arg);
+#elif __APPLE__
+            struct kevent *ke = &triggered_events[i];
+            if (ke->filter == EVFILT_USER) {
+                printf("Received stop signal\n");
+                unlock();
+                continue;
             }
+
+            struct event *ev = (struct event *)ke->udata;
+#endif
+            callback = ev->callback;
+            arg = ev->arg;
+            unlock();
+
+            if (callback) {
+                callback(ev, arg);
+            }    
+        
         }
     }
+
     printf("Event dispatch stopped\n");
 }

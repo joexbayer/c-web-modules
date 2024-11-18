@@ -135,7 +135,8 @@ Error messages are forwarded back to you over http.
 
 # Build it yourself!
 
-Note: MacOS support is not guarenteed!
+> **Note:**  
+>  MacOS support is not guaranteed!
 
 The project depends on:
 
@@ -166,7 +167,7 @@ docker-compose up --build
 
 # How is c-web-modules different from Apache Modules and ISAPI Extensions?
 
-Unlike Apache modules and ISAPI extensions, which are tightly integrated into the server and require configuration changes followed by a server restart or reload, **c-web-modules** offers true runtime flexibility.
+Unlike Apache modules and ISAPI extensions, which are tightly integrated into the server and require configuration changes followed by a server restart or reload, **c-web-modules** offers runtime flexibility.
 
 **Key Differences:**
 - **Dynamic Deployment**:  
@@ -178,4 +179,4 @@ Unlike Apache modules and ISAPI extensions, which are tightly integrated into th
 - **WebSocket Updates**:  
   WebSocket handlers can be updated at runtime without breaking existing connections, a feature not typically available in Apache modules or ISAPI.
 
-This makes **c-web-modules** more suitable for rapid experimentation and modular design, especially in scenarios requiring frequent updates without disrupting service.
+This makes **c-web-modules** suitable for rapid experimentation and modular design, especially in scenarios requiring frequent updates without disrupting service.

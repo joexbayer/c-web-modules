@@ -13,11 +13,16 @@ LDFLAGS = -lssl -lcrypto -lsqlite3 -ljansson
 CFLAGS = -O2 -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -g 
 ifeq ($(shell uname), Darwin)
 HOMEBREW_PREFIX := $(shell brew --prefix openssl@3)
+JANSSON_PREFIX := $(shell brew --prefix jansson)
 	ifeq ($(HOMEBREW_PREFIX),)
 		$(error openssl@3 is not installed, make sure its installed with `brew install openssl@3`)
 	endif
-	CFLAGS += -I/opt/homebrew/opt/openssl@3/include -fsanitize=thread,undefined
-	LDFLAGS += -L/opt/homebrew/opt/openssl@3/lib
+	ifeq ($(JANSSON_PREFIX),)
+		$(error jansson is not installed, make sure its installed with `brew install jansson`)
+	endif
+
+	CFLAGS += -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/opt/jansson/include -fsanitize=thread,undefined
+	LDFLAGS += -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/opt/jansson/lib
 endif
 
 # Export dynamic symbols on Linux
@@ -60,6 +65,10 @@ ${LIB_DIR}/libevent.so: ${LIB_DIR}/libevent.c
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
 	rm -f $(LIB_TARGET) libs/libevent.so
+
+purge:
+	rm -rf ./modules/*.so
+	rm -rf ./modules/routes.dat
 
 run: all
 	$(TARGET)

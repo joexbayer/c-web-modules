@@ -143,6 +143,17 @@ static int load_from_shared_object(char* so_path){
 
     printf("[INFO   ] Module %s is loaded.\n", module->name);
 
+    /* Only handle route conflicts on new modules */
+    for (int i = 0; i < module->size; i++) {
+        struct route route = route_find((char*)module->routes[i].path, (char*)module->routes[i].method);
+        if (route.route) {
+            pthread_rwlock_unlock(route.rwlock);
+            fprintf(stderr, "[ERROR] Route conflict: %s %s\n", module->routes[i].method, module->routes[i].path);
+            dlclose(handle);
+            return -1;
+        }
+    }
+
     pthread_rwlock_init(&gateway.entries[gateway.count].rwlock, NULL);
     update_gateway_entry(gateway.count, so_path, module, handle);
     gateway.count++;
@@ -170,6 +181,7 @@ static int route_save_to_disk(char* filename) {
     FILE *fp = fopen(filename, "wb");
     if (fp == NULL) {
         perror("Error creating route file");
+        pthread_mutex_unlock(&save_mutex);
         return -1;
     }
 
@@ -193,6 +205,7 @@ static int route_load_from_disk(char* filename) {
     FILE *fp = fopen(filename, "rb");
     if (fp == NULL) {
         perror("Error opening route file");
+        pthread_mutex_unlock(&save_mutex);
         return -1;
     }
 
