@@ -1,0 +1,30 @@
+name: Build CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Check out the repository code
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Set up a C/C++ build environment
+    - name: Set up dependencies
+      run: |
+        sudo apt-get update && sudo apt-get install -y \
+          libssl-dev \
+          libsqlite3-dev \
+          libjansson-dev \
+          make \
+          gcc
+          
+    # Build the project
+    - name: Build project
+      run: make
