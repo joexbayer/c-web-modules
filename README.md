@@ -3,7 +3,7 @@
 > **Note:**  
 > This project is currently a **proof of concept** and represents the **bare minimum viable product (MVP)**.  
 > It is not designed for production use, and there may be bugs, limitations, or incomplete features.  
-> Use at your own discretion, and feel free to co
+> Use at your own discretion.
 
 Welcome to **c-web-modules**, a modular and efficient approach to web development in C. Inspired by kernel modules and AWS Lambda, this project allows you to upload C code directly to the server, which compiles and deploys it at runtime. No precompilation is necessary, and the server can easily be upgraded to include more features or external libraries.
 
