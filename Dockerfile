@@ -1,5 +1,5 @@
 # Use the official Debian minimal image
-FROM ubuntu:latest
+FROM debian:latest
 
 # Install necessary packages
 RUN apt-get update && apt-get install -y \
