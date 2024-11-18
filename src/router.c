@@ -78,6 +78,10 @@ static int update_gateway_entry(int index, char* so_path, struct module* routes,
 
     /* Update all websocket connections */
     for(int i = 0; gateway.entries[index].module && i < gateway.entries[index].module->ws_size; i++) {
+        /**
+         * TODO: What if we do want to close the websocket connections?
+         * Currently the module has to do that itself on unload.
+         */
         //ws_force_close(&gateway.entries[index].module->websockets[i]);
         ws_update_container(gateway.entries[index].module->websockets[i].path, &gateway.entries[index].module->websockets[i]);
     }

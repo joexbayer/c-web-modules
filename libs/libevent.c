@@ -277,7 +277,6 @@ void event_dispatch(void) {
             lock();
 #ifdef __linux__
             if (triggered_events[i].data.fd == notify_pipe[0]) {
-                printf("Received stop signal\n");
                 char buf[1];
                 read(notify_pipe[0], buf, 1);
                 unlock();
@@ -288,7 +287,6 @@ void event_dispatch(void) {
 #elif __APPLE__
             struct kevent *ke = &triggered_events[i];
             if (ke->filter == EVFILT_USER) {
-                printf("Received stop signal\n");
                 unlock();
                 continue;
             }
@@ -306,5 +304,5 @@ void event_dispatch(void) {
         }
     }
 
-    printf("Event dispatch stopped\n");
+    printf("[EVENTLIB] Event dispatch stopped\n");
 }

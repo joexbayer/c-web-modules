@@ -41,14 +41,16 @@ static const char* allowed_ip_prefixes[] = {
 };
 
 struct cidr_prefix {
-    uint32_t prefix;    // Integer representation of the prefix
-    uint8_t prefix_len; // Length of the prefix in bits
+    uint32_t prefix; 
+    uint8_t prefix_len;
 };
 
 struct connection {
     int sockfd;
     struct sockaddr_in address;
 };
+
+static int silent = 0;
 
 // static int parse_cidr(const char *cidr_str, struct cidr_prefix *result) {
 //     char ip[INET_ADDRSTRLEN];
@@ -134,7 +136,6 @@ static struct connection* server_accept(struct connection s) {
     return c;
 }
 
-/* TODO: Run in seprate isolated process. */
 static int gateway(int fd, struct http_request *req, struct http_response *res) {
     if (strncmp(req->path, "/favicon.ico", 12) == 0) {
         res->status = HTTP_404_NOT_FOUND;
@@ -215,84 +216,99 @@ static void clean_up(struct http_request *req, struct http_response *res) {
     map_destroy(req->headers);
     map_destroy(req->data);
     map_destroy(res->headers);
+    free(res->body);
 }
 
 static void *thread_handle_client(void *arg) {
+    int ret;
     struct connection *c = (struct connection *)arg;
 
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
+    while(1){
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
 
-    char buffer[8*1024] = {0};
-    int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
-    if (read_size <= 0) {
-        close(c->sockfd);
-        free(c);
-        return NULL;
-    }
-    buffer[read_size] = '\0';
-
-    struct http_request req;
-    req.tid = pthread_self();
-
-    http_parse(buffer, &req);
-
-    while (req.content_length > read_size) {
-        read_size += read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+        char buffer[8*1024] = {0};
+        int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
+        if (read_size <= 0) {
+            /* Client disconnected */
+            close(c->sockfd);
+            free(c);
+            return NULL;
+        }
         buffer[read_size] = '\0';
-    }
-    req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
 
-    http_parse_data(&req);
+        struct http_request req;
+        req.tid = pthread_self();
 
-    struct http_response res;
-    res.headers = map_create(32);
-    if (res.headers == NULL) {
-        perror("Error creating map");
-        close(c->sockfd);
-        free(c);
-        return NULL;
-    }
+        http_parse(buffer, &req);
 
-    res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
-    if (res.body == NULL) {
-        perror("Error allocating memory for response body");
-        close(c->sockfd);
-        free(c);
-        return NULL;
-    }
+        /* Read the rest of the request */
+        while (req.content_length > read_size) {
+            ret = read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+            if (ret <= 0) {
+                /* Client disconnected */
+                close(c->sockfd);
+                free(c);
+                return NULL;
+            }
 
-    gateway(c->sockfd, &req, &res);
+            read_size += ret;
+            buffer[read_size] = '\0';
+        }
+        req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
 
-    char headers[4*1024] = {0};
-    build_headers(&res, headers, sizeof(headers));
-    if (!req.websocket) {
-        map_insert(res.headers, "Connection", "close");
-    }
+        http_parse_data(&req);
 
-    char response[8*1024] = {0};
-    snprintf(response, sizeof(response), HTTP_VERSION" %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
-    write(c->sockfd, response, strlen(response));
+        struct http_response res;
+        res.headers = map_create(32);
+        if (res.headers == NULL) {
+            perror("Error creating map");
+            close(c->sockfd);
+            free(c);
+            return NULL;
+        }
 
-    double time_taken;
-    measure_time(&start, &end, &time_taken);
+        res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
+        if (res.body == NULL) {
+            perror("Error allocating memory for response body");
+            close(c->sockfd);
+            free(c);
+            return NULL;
+        }
 
-    printf("[%ld] Request %s %s took %f seconds\n", (long)req.tid, http_methods[req.method], req.path, time_taken);
+        gateway(c->sockfd, &req, &res);
 
-    char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
-    if (ac) free(ac);
+        char headers[4*1024] = {0};
+        // if (!req.websocket) {
+        //     map_insert(res.headers, "Connection", "close");
+        // }
+        build_headers(&res, headers, sizeof(headers));
 
-    clean_up(&req, &res);
+        char response[8*1024] = {0};
+        snprintf(response, sizeof(response), HTTP_VERSION" %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
+        ret = write(c->sockfd, response, strlen(response));
+        if (ret < 0) {
+            perror("[ERROR] Error writing to socket");
+        }
 
-    if (!req.websocket) {
-        //printf("[%ld] Closing connection (not a websocket)\n", (long)req.tid);
-        close(c->sockfd);
-    } else {
-        ws_confirm_open(c->sockfd);
+        double time_taken;
+        measure_time(&start, &end, &time_taken);
+
+        if (!silent)
+            printf("[%ld] %s - Request %s %s took %f seconds.\n", (long)req.tid, http_errors[res.status], http_methods[req.method], req.path, time_taken);
+
+        char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
+        if (ac) free(ac);
+
+        clean_up(&req, &res);
+
+        if (req.websocket) {
+            ws_confirm_open(c->sockfd);
+        }
+
     }
 
     free(c);
-    free(res.body);
     return NULL;
 }
 
@@ -311,9 +327,14 @@ static void server_signal_handler(int sig) {
     stop = 1;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     (void)allowed_management_commands;
     (void)allowed_ip_prefixes;
+
+    /* Check for --silent flag */
+    if (argc > 1 && strcmp(argv[1], "--silent") == 0) {
+        silent = 1;
+    }
 
     CRYPTO_ONCE openssl_once = CRYPTO_ONCE_STATIC_INIT;
     if (!CRYPTO_THREAD_run_once(&openssl_once, openssl_init_wrapper)) {

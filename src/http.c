@@ -1,8 +1,11 @@
+
 #include "http.h"
 #include "map.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+
+/* Hypertext Transfer Protocol -- HTTP/1.1 Spec:  https://datatracker.ietf.org/doc/html/rfc2616*/
 
 const char *http_methods[] = {"GET", "POST", "PUT", "DELETE"};
 const char *http_errors[] = {"101 Switching Protocols", "200 OK", "302 Found", "400 Bad Request", "403 Forbidden", "404 Not Found", "500 Internal Server Error"};
