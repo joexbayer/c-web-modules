@@ -35,6 +35,8 @@ struct http_request {
     char *path;
     char *body;
     int content_length;
+    char keep_alive;
+    char close;
     pthread_t tid;
     struct map *params;
     struct map *headers;
@@ -47,6 +49,7 @@ struct http_response {
     http_error_t status;
     struct map *headers;
     char *body;
+    int content_length;
 };
 
 struct websocket {

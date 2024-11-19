@@ -85,7 +85,8 @@ export module_t config = {
 3. **Dynamic Updates**: Add or replace functionality without downtime or recompiling the entire server.  
 4. **Performance**: Written in C, the server offers unmatched speed and efficiency.  
 5. **WebSocket Support**: Even when modules are updated, existing WebSocket connections remain alive.  
-6. **Built-In Features**: Includes a cross-module cache and scheduler for deferred tasks.  
+6. **Built-In Features**: Includes a cross-module cache and scheduler for deferred tasks.
+7. **Regex in Paths**: Define routes using regular expressions for more flexible and powerful URL matching. 
 
 Currently supported external libraries:  
 - **OpenSSL**: Currently only for hashing, but later for secure communication.  

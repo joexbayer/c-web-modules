@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <container.h>
+#include <regex.h>
 
 #define MODULE_TAG "config"
 #define ROUTE_FILE "modules/routes.dat"
@@ -31,20 +32,36 @@ struct gateway {
 static int route_save_to_disk(char* filename);
 static int route_load_from_disk(char* filename);
 
+/* Find route with regex pattern matching included. */
 struct route route_find(char *route, char *method) {
-
     pthread_rwlock_rdlock(&gateway.rwlock);
     for (int i = 0; i < gateway.count; i++) {
         pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
         for (int j = 0; j < gateway.entries[i].module->size; j++) {
-            if (strcmp(route, gateway.entries[i].module->routes[j].path) == 0 &&
-                strcmp(gateway.entries[i].module->routes[j].method, method) == 0) {
-                /* Caller is responsible for unlocking the read lock! */
-                pthread_rwlock_unlock(&gateway.rwlock);
-                return (struct route){
-                    .route = &gateway.entries[i].module->routes[j],
-                    .rwlock = &gateway.entries[i].rwlock
-                };
+            struct route_info *entry = &gateway.entries[i].module->routes[j];
+            if(entry->path == NULL || entry->method == NULL) {
+                continue;
+            }
+
+            if (strcmp(method, entry->method) == 0) {
+                regex_t regex;
+
+                if (regcomp(&regex, entry->path, REG_EXTENDED | REG_NOSUB) != 0) {
+                    fprintf(stderr, "Invalid regex pattern: %s\n", entry->path);
+                    continue;
+                }
+
+                int match = regexec(&regex, route, 0, NULL, 0);
+                regfree(&regex);
+
+                if (match == 0) {
+                    pthread_rwlock_unlock(&gateway.rwlock);
+                    /* Caller is responsible for unlocking the read lock! */
+                    return (struct route){
+                        .route = entry,
+                        .rwlock = &gateway.entries[i].rwlock
+                    };
+                }
             }
         }
         pthread_rwlock_unlock(&gateway.entries[i].rwlock);
@@ -114,6 +131,7 @@ static int update_gateway_entry(int index, char* so_path, struct module* routes,
     printf("[INFO   ] Module %s is updated.\n", routes->name);
     return 0;
 }
+
 static void* load_shared_object(char* so_path){
     void* handle = dlopen(so_path, RTLD_LAZY);
     if (!handle) {

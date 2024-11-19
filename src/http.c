@@ -231,6 +231,14 @@ static void http_parse_request(const char *request, struct http_request *req) {
         req->content_length = 0;
     }
 
+    /* Parse Connection */
+    const char *connection = map_get(req->headers, "Connection");
+    if (connection && strcasecmp(connection, "keep-alive") == 0) {
+        req->keep_alive = 1;
+    } else if (connection && strcasecmp(connection, "close") == 0) {
+        req->close = 1;
+    }
+
     free(request_copy);
 }
 

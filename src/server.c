@@ -205,7 +205,7 @@ static void measure_time(struct timespec *start, struct timespec *end, double *t
     *time_taken = (*time_taken + (end->tv_nsec - start->tv_nsec)) * 1e-9;
 }
 
-static void clean_up(struct http_request *req, struct http_response *res) {
+static void thread_clean_up(struct http_request *req, struct http_response *res) {
     if (req->body) free(req->body);
 
     for (size_t i = 0; i < map_size(req->params); i++) {
@@ -222,15 +222,27 @@ static void clean_up(struct http_request *req, struct http_response *res) {
     free(res->body);
 }
 
+static void thread_set_timeout(int sockfd, int seconds) {
+    struct timeval tv;
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+}
+
 static void thread_handle_client(void *arg) {
     int ret;
     struct connection *c = (struct connection *)arg;
+
+    /* Set timeout for client */
+    thread_set_timeout(c->sockfd, 2);
 
     while(1){
         char buffer[8*1024] = {0};
         int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
-            /* Client disconnected */
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                printf("[SERVER] Client read timeout\n");
+            }
             close(c->sockfd);
             free(c);
             return;
@@ -304,7 +316,7 @@ static void thread_handle_client(void *arg) {
         char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
         if (ac) free(ac);
 
-        clean_up(&req, &res);
+        thread_clean_up(&req, &res);
 
         if (req.websocket) {
             ws_confirm_open(c->sockfd);
