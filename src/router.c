@@ -39,15 +39,19 @@ struct route route_find(char *route, char *method) {
         pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
         for (int j = 0; j < gateway.entries[i].module->size; j++) {
             struct route_info *entry = &gateway.entries[i].module->routes[j];
-            if(entry->path == NULL || entry->method == NULL) {
+            if (entry->path == NULL || entry->method == NULL) {
                 continue;
             }
 
             if (strcmp(method, entry->method) == 0) {
                 regex_t regex;
+                char anchored_pattern[1024];
 
-                if (regcomp(&regex, entry->path, REG_EXTENDED | REG_NOSUB) != 0) {
-                    fprintf(stderr, "Invalid regex pattern: %s\n", entry->path);
+                /* Create an anchored regex pattern, else partial paths will be matched... */
+                snprintf(anchored_pattern, sizeof(anchored_pattern), "^%s$", entry->path);
+
+                if (regcomp(&regex, anchored_pattern, REG_EXTENDED | REG_NOSUB) != 0) {
+                    fprintf(stderr, "Invalid regex pattern: %s\n", anchored_pattern);
                     continue;
                 }
 
@@ -161,7 +165,7 @@ static int load_from_shared_object(char* so_path){
         return -1;
     }
 
-    pthread_rwlock_wrlock(&gateway.rwlock);
+    pthread_rwlock_rdlock(&gateway.rwlock);
 
     /* Check if module already exists */
     for (int i = 0; i < gateway.count; i++) {
@@ -185,7 +189,7 @@ static int load_from_shared_object(char* so_path){
         if (route.route) {
             pthread_rwlock_unlock(route.rwlock);
             pthread_rwlock_unlock(&gateway.rwlock);
-            fprintf(stderr, "[ERROR] Route conflict: %s %s\n", module->routes[i].method, module->routes[i].path);
+            fprintf(stderr, "[ERROR] Route conflict: %s %s - \n", module->routes[i].method, module->routes[i].path);
             dlclose(handle);
             return -1;
         }

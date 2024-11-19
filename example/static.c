@@ -77,5 +77,5 @@ export module_t config = {
         /* Allows regex in route paths */
         {"/static/.*", "GET", download, NONE},
     },
-    .size = sizeof(routes) / sizeof(routes[0]),
+    .size = 1,
 };
