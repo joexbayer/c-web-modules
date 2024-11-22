@@ -233,9 +233,6 @@ static void thread_handle_client(void *arg) {
     int ret;
     struct connection *c = (struct connection *)arg;
 
-    /* Set timeout for client */
-    thread_set_timeout(c->sockfd, 2);
-
     while(1){
         char buffer[8*1024] = {0};
         int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
@@ -248,6 +245,9 @@ static void thread_handle_client(void *arg) {
             return;
         }
         buffer[read_size] = '\0';
+
+        printf("[SERVER] Received %d bytes\n", read_size);
+        printf("[SERVER] Received %s\n", buffer);
 
         struct timespec start, end;
         clock_gettime(CLOCK_MONOTONIC, &start);
@@ -270,7 +270,12 @@ static void thread_handle_client(void *arg) {
             read_size += ret;
             buffer[read_size] = '\0';
         }
-        req.body = strdup(strstr(buffer, "\r\n\r\n") + 4);
+        char* body_ptr = strstr(buffer, "\r\n\r\n");
+        if (body_ptr) {
+            req.body = strdup(body_ptr + 4);
+        } else {
+            req.body = strdup("");
+        }
 
         http_parse_data(&req);
 
@@ -320,6 +325,10 @@ static void thread_handle_client(void *arg) {
 
         if (req.websocket) {
             ws_confirm_open(c->sockfd);
+            return; /* Websocket connection is handled by the websocket thread */
+        } else {
+            /* Set timeout for client */
+            thread_set_timeout(c->sockfd, 2);
         }
 
         if (thread_pool_is_full(pool)) {

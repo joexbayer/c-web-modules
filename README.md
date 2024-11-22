@@ -30,6 +30,9 @@ This isn’t a silver bullet—it’s a proof of concept. But **c-web-modules** 
 
 ---
 
+## Getting started
+
+
 ## Example: Counter Module  
 
 Here’s a simple example of a module that keeps track of a counter and returns its value every time you visit `/counter`.
@@ -99,7 +102,6 @@ Currently supported external libraries:
 
 Deploying code to the server is simple and can be done in multiple ways, depending on your workflow.
 
-
 ### 1. Basic Deployment with `curl`  
 
 At its core, deploying code to the server involves sending a POST request with the C file attached. Here’s an example using `curl`:  
@@ -128,6 +130,16 @@ example2.c
 
 When using the .ini files you run: `./cweb deploy`
 
+## Windows
+
+For Windows there currently only is a very primitve deploy.bat script:
+
+```bash
+.\deploy.bat file.c
+```
+
+The server needs to be specified inside the .bat file, default is: http://localhost:8080/mgnt
+
 ### Errors
 
 Error messages are forwarded back to you over http.
@@ -142,10 +154,19 @@ Error messages are forwarded back to you over http.
 The project depends on:
 
 ```bash
-# Linux
+# Debian
 sudo apt-get install libssl-dev
 sudo apt-get install libsqlite3-dev
 sudo apt-get install libjansson-dev
+
+# Arch
+sudo pacman -S openssl
+sudo pacman -S sqlite
+sudo pacman -S jansson
+
+# Bug with archlinux and fanitizser, ref: https://github.com/joexbayer/c-web-modules/issues/12
+sudo sysctl vm.mmap_rnd_bits=30
+
 
 # MacOS
 brew install openssl@3

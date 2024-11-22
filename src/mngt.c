@@ -17,7 +17,7 @@
     #define CFLAGS "-fPIC -shared -I./include -I/opt/homebrew/opt/jansson/include"
     #define LIBS "-L./libs -lmodule -L/opt/homebrew/opt/jansson/lib -ljansson"
 #elif __linux__
-    #define CFLAGS "-fPIC -shared -I./include"
+    #define CFLAGS "-fPIC -shared -I./include -Wl,-rpath=./libs" /* -Wl,-rpath needed for archlinux. */
     #define LIBS "-L./libs -lmodule -ljansson"
 #else
     #error "Unsupported platform"
