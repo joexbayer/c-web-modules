@@ -8,7 +8,7 @@
 #include <ctype.h>
 
 #define HTTP_VERSION "HTTP/1.1"
-#define HTTP_RESPONSE_SIZE 8*1024
+#define HTTP_RESPONSE_SIZE 8*1024 /* 8KB */
 
 typedef enum http_method {
     HTTP_ERR = -1,
@@ -20,18 +20,22 @@ typedef enum http_method {
 extern const char *http_methods[];
 
 typedef enum http_error {
+    HTTP_000_UNKNOWN,
     HTTP_101_SWITCHING_PROTOCOLS,
     HTTP_200_OK,
     HTTP_302_FOUND,
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
     HTTP_404_NOT_FOUND,
+    HTTP_405_METHOD_NOT_ALLOWED,
+    HTTP_414_URI_TOO_LONG,
     HTTP_500_INTERNAL_SERVER_ERROR
 } http_error_t;
 extern const char *http_errors[];
 
 struct http_request {
     http_method_t method;
+    http_error_t status;
     char *path;
     char *body;
     int content_length;

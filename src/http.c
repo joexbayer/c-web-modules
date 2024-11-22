@@ -5,10 +5,17 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/* Hypertext Transfer Protocol -- HTTP/1.1 Spec:  https://datatracker.ietf.org/doc/html/rfc2616*/
+/* Hypertext Transfer Protocol -- HTTP/1.1 Spec:  https://datatracker.ietf.org/doc/html/rfc2616 */
 
 const char *http_methods[] = {"GET", "POST", "PUT", "DELETE"};
-const char *http_errors[] = {"101 Switching Protocols", "200 OK", "302 Found", "400 Bad Request", "403 Forbidden", "404 Not Found", "500 Internal Server Error"};
+const char *http_errors[] = {
+    "400 Bad Request", /* Unknown defaults to 400 */
+    "101 Switching Protocols",
+    "200 OK",
+    "302 Found",
+    "400 Bad Request", "403 Forbidden", "404 Not Found", "405 Method Not Allowed", "414 URI Too Long",
+    "500 Internal Server Error"
+};
 
 /* Helper function to trim trailing whitespace */
 static void trim_trailing_whitespace(char *str) {
@@ -150,7 +157,12 @@ static void http_parse_request(const char *request, struct http_request *req) {
     *method_end = '\0';
     http_parse_method(cursor, req);
 
-    /* Parse path */
+    /**
+    * Parse path
+    * Note: Servers ought to be cautious about depending on URI lengths
+    * above 255 bytes, because some older client or proxy
+    * implementations might not properly support these lengths.
+    */
     cursor = method_end + 1;
     char *path_end = strchr(cursor, ' ');
     if (!path_end) {
@@ -160,6 +172,17 @@ static void http_parse_request(const char *request, struct http_request *req) {
         return;
     }
     *path_end = '\0';
+    if (strlen(cursor) > 255) {
+        fprintf(stderr, "[ERROR] URI length exceeds 255 bytes\n");
+        /**
+         * A server SHOULD return 414 (Request-URI Too Long) status if a URI is longer
+         * than the server can handle.
+         */
+        req->status = HTTP_414_URI_TOO_LONG;
+        free(request_copy);
+        req->method = -1;
+        return;
+    }
     req->path = strdup(cursor);
     if (!req->path) {
         perror("Failed to allocate memory for path");
@@ -331,7 +354,12 @@ static int http_extract_multipart_form_data(const char *body, const char *bounda
 
 /* Parses body data if its either multipart of x-www-form */
 int http_parse_data(struct http_request *req) {
-    req->data = map_create(10);
+    req->data = map_create(32);
+    if(!req->data) {
+        perror("Failed to create map");
+        return -1;
+    }
+
     char *content_type = map_get(req->headers, "Content-Type");
 
     /* Handle multipart/form-data */
@@ -389,5 +417,14 @@ int http_parse(const char *request, struct http_request *req) {
     if (req->method == -1) {
         return -1;
     }
+
+    char* host = map_get(req->headers, "Host");
+    if (!host) {
+        fprintf(stderr, "[ERROR] Host header not found\n");
+        req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
+        return -1;
+    }
+
     return 0;
 }

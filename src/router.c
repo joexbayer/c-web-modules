@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <container.h>
 #include <regex.h>
+#include <jansson.h>
 
 #define MODULE_TAG "config"
 #define ROUTE_FILE "modules/routes.dat"
@@ -31,6 +32,51 @@ struct gateway {
 
 static int route_save_to_disk(char* filename);
 static int route_load_from_disk(char* filename);
+
+int route_gateway_json(struct http_response* res){
+    json_t *root = json_object();
+    json_t *modules = json_array();
+
+    for (int i = 0; i < gateway.count; i++) {
+        json_t *module = json_object();
+        json_object_set_new(module, "name", json_string(gateway.entries[i].module->name));
+        json_object_set_new(module, "author", json_string(gateway.entries[i].module->author));
+        json_object_set_new(module, "path", json_string(gateway.entries[i].so_path));
+
+        json_t *routes = json_array();
+        for (int j = 0; j < gateway.entries[i].module->size; j++) {
+            json_t *route = json_object();
+            json_object_set_new(route, "method", json_string(gateway.entries[i].module->routes[j].method));
+            json_object_set_new(route, "path", json_string(gateway.entries[i].module->routes[j].path));
+            json_array_append_new(routes, route);
+        }
+        json_object_set_new(module, "routes", routes);
+
+         
+        json_t *websockets = json_array();
+        for (int j = 0; j < gateway.entries[i].module->ws_size; j++) {
+            json_t *ws_route = json_object();
+            json_object_set_new(ws_route, "path", json_string(gateway.entries[i].module->websockets[j].path));
+            json_array_append_new(websockets, ws_route);
+        }
+        
+        json_object_set_new(module, "websockets", websockets);
+        
+        json_array_append_new(modules, module);
+    }
+
+    json_object_set_new(root, "modules", modules);
+    char *json_str = json_dumps(root, JSON_INDENT(2));
+    json_decref(root);
+
+    map_insert(res->headers, "Content-Type", "application/json");
+    map_insert(res->headers, "Access-Control-Allow-Origin", "*");
+    res->body = json_str;
+    res->content_length = strlen(json_str);
+    res->status = HTTP_200_OK;
+
+    return 0;
+}
 
 /* Find route with regex pattern matching included. */
 struct route route_find(char *route, char *method) {

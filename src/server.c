@@ -23,6 +23,7 @@
 #include "scheduler.h"
 #include "pool.h"
 
+#define DEFAULT_PORT 8080
 #define ACCEPT_BACKLOG 128
 #define MODULE_URL "/mgnt"
 
@@ -53,7 +54,15 @@ struct connection {
 };
 
 static struct thread_pool *pool;
-static int silent = 0;
+static struct server_config {
+    int port;
+    int thread_pool_size;
+    int silent_mode;
+} config = {
+    .port = DEFAULT_PORT,
+    .thread_pool_size = 0,
+    .silent_mode = 0,
+};
 
 // static int parse_cidr(const char *cidr_str, struct cidr_prefix *result) {
 //     char ip[INET_ADDRSTRLEN];
@@ -147,10 +156,16 @@ static int gateway(int fd, struct http_request *req, struct http_response *res) 
     }
 
     if(strncmp(req->path, MODULE_URL, 6) == 0) {
-        if(mgnt_parse_request(req, res) >= 0) {
-            res->status = HTTP_200_OK; 
+        if (req->method == HTTP_GET) {
+           route_gateway_json(res);
+        } else if (req->method == HTTP_POST) {
+            if (mgnt_parse_request(req, res) >= 0) {
+                res->status = HTTP_200_OK;
+            } else {
+                res->status = HTTP_500_INTERNAL_SERVER_ERROR;
+            }
         } else {
-            res->status = HTTP_500_INTERNAL_SERVER_ERROR;
+            res->status = HTTP_405_METHOD_NOT_ALLOWED;
         }
         return 0;
     }
@@ -205,19 +220,36 @@ static void measure_time(struct timespec *start, struct timespec *end, double *t
     *time_taken = (*time_taken + (end->tv_nsec - start->tv_nsec)) * 1e-9;
 }
 
-static void thread_clean_up(struct http_request *req, struct http_response *res) {
+static void thread_clean_up_request(struct http_request *req) {
     if (req->body) free(req->body);
+    if (req->path) free(req->path);
 
-    for (size_t i = 0; i < map_size(req->params); i++) {
-        free(req->params->entries[i].value);
+    if(req->params != NULL){
+        for (size_t i = 0; i < map_size(req->params); i++) {
+            printf("Freeing %s\n", req->params->entries[i].key);
+            free(req->params->entries[i].value);
+        }
+        map_destroy(req->params);
     }
-    map_destroy(req->params);
 
-    for (size_t i = 0; i < map_size(req->headers); i++) {
-        free(req->headers->entries[i].value);
+    if(req->headers != NULL){
+        for (size_t i = 0; i < map_size(req->headers); i++) {
+            free(req->headers->entries[i].value);
+        }
+        map_destroy(req->headers);
     }
-    map_destroy(req->headers);
-    map_destroy(req->data);
+
+    if(req->data != NULL){
+        for (size_t i = 0; i < map_size(req->data); i++) {
+            free(req->data->entries[i].value);
+        }
+        map_destroy(req->data);
+    }
+
+}
+
+static void thread_clean_up(struct http_request *req, struct http_response *res) {
+    thread_clean_up_request(req);
     map_destroy(res->headers);
     free(res->body);
 }
@@ -255,6 +287,13 @@ static void thread_handle_client(void *arg) {
         req.tid = pthread_self();
 
         http_parse(buffer, &req);
+        if(req.method == HTTP_ERR) {
+            dprintf(c->sockfd, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", http_errors[req.status]);
+            thread_clean_up_request(&req);
+            close(c->sockfd);
+            free(c);
+            return;
+        }
 
         /* Read the rest of the request */
         while (req.content_length > read_size) {
@@ -314,7 +353,7 @@ static void thread_handle_client(void *arg) {
         double time_taken;
         measure_time(&start, &end, &time_taken);
 
-        if (!silent)
+        if (!config.silent_mode)
             printf("[%ld] %s - Request %s %s took %f seconds.\n", (long)req.tid, http_errors[res.status], http_methods[req.method], req.path, time_taken);
 
         char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
@@ -363,9 +402,21 @@ int main(int argc, char *argv[]) {
     (void)allowed_management_commands;
     (void)allowed_ip_prefixes;
 
-    /* Check for --silent flag */
-    if (argc > 1 && strcmp(argv[1], "--silent") == 0) {
-        silent = 1;
+    int opt;
+    while ((opt = getopt(argc, argv, "p:t:s")) != -1) {
+        switch (opt) {
+            case 'p':
+                config.port = atoi(optarg);
+                break;
+            case 't':
+                config.thread_pool_size = atoi(optarg);
+                break;
+            case 's':
+                config.silent_mode = 1;
+                break;
+            default:
+                fprintf(stderr, "Usage: %s [-p port] [-t thread_pool_size] [-s (silent mode)]\n", argv[0]);
+        }
     }
 
     int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
@@ -384,10 +435,10 @@ int main(int argc, char *argv[]) {
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    struct connection s = server_init(8080);
+    struct connection s = server_init(config.port);
 
     /* Initialize thread pool, 2 times numbers of cores */
-    pool = thread_pool_init(num_cores*2);
+    pool = thread_pool_init(config.thread_pool_size ? config.thread_pool_size : num_cores*2);
     if (pool == NULL) {
         fprintf(stderr, "[ERROR] Failed to initialize thread pool\n");
         return 1;

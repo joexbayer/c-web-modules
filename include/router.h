@@ -30,6 +30,7 @@ struct ws_route {
 int route_register_module(char* so_path);
 struct route route_find(char *route, char *method);
 struct ws_route ws_route_find(char *route);
+int route_gateway_json(struct http_response* res);
 
 /* TODO: Move... */
 int mgnt_parse_request(struct http_request *req, struct http_response *res);
