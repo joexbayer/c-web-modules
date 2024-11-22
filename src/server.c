@@ -266,6 +266,9 @@ static void thread_handle_client(void *arg) {
     struct connection *c = (struct connection *)arg;
 
     while(1){
+        int close_connection = 0;
+
+        /* Read initial request */
         char buffer[8*1024] = {0};
         int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
@@ -316,6 +319,7 @@ static void thread_handle_client(void *arg) {
         }
 
         http_parse_data(&req);
+        close_connection = req.close;
 
         struct http_response res;
         res.headers = map_create(32);
@@ -336,14 +340,23 @@ static void thread_handle_client(void *arg) {
 
         gateway(c->sockfd, &req, &res);
 
-        char headers[4*1024] = {0};
         /* If all threads are in use, send close */
         if(thread_pool_is_full(pool)) {
             map_insert(res.headers, "Connection", "close");
+            close_connection = 1;
         }
-        build_headers(&res, headers, sizeof(headers));
-        
+
+
+        /* Servers MUST include a valid Date header in HTTP responses. */
+        time_t now = time(NULL);
+        struct tm tm = *gmtime(&now);
+        char date[128];
+        strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+        map_insert(res.headers, "Date", strdup(date));
+
+        char headers[4*1024] = {0};
         char response[8*1024] = {0};
+        build_headers(&res, headers, sizeof(headers));
         snprintf(response, sizeof(response), HTTP_VERSION" %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
         ret = write(c->sockfd, response, strlen(response));
         if (ret < 0) {
@@ -356,11 +369,13 @@ static void thread_handle_client(void *arg) {
         if (!config.silent_mode)
             printf("[%ld] %s - Request %s %s took %f seconds.\n", (long)req.tid, http_errors[res.status], http_methods[req.method], req.path, time_taken);
 
+        /* Ugly hacks */
         char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
         if (ac) free(ac);
+        char* dt = map_get(res.headers, "Date");
+        if (dt) free(dt);
 
         thread_clean_up(&req, &res);
-
         if (req.websocket) {
             ws_confirm_open(c->sockfd);
             return; /* Websocket connection is handled by the websocket thread */
@@ -369,7 +384,10 @@ static void thread_handle_client(void *arg) {
             thread_set_timeout(c->sockfd, 2);
         }
 
-        if (thread_pool_is_full(pool)) {
+        /**
+         * HTTP/1.1 connections MUST be persistent by default unless a Connection: close header is explicitly included.
+         */
+        if (close_connection) {
             close(c->sockfd);
             free(c);
             return;

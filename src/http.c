@@ -418,6 +418,9 @@ int http_parse(const char *request, struct http_request *req) {
         return -1;
     }
 
+    /**
+     * Requests MUST include the Host header field, and the server MUST reject requests without it (400 Bad Request).
+     */
     char* host = map_get(req->headers, "Host");
     if (!host) {
         fprintf(stderr, "[ERROR] Host header not found\n");
