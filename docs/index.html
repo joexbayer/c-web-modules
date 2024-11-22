@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>c-web-modules Documentation</title>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <style>
+    /* General Reset */
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+      background-color: #f4f4f4;
+    }
+
+    /* Centered container */
+    .container {
+      width: 80%;
+      max-width: 1000px;
+      background: white;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      display: flex;
+      flex-direction: row;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 250px;
+      background-color: #f8f9fa;
+      padding: 20px;
+      border-right: 1px solid #ddd;
+      font-size: 24px;
+    }
+
+    .sidebar h2 {
+      margin-top: 0;
+      font-size: 18px;
+    }
+
+    .sidebar ul {
+      list-style-type: none;
+      padding-left: 0;
+    }
+
+    .sidebar li {
+      margin: 10px 0;
+    }
+
+    .sidebar li a {
+      text-decoration: none;
+      color: #007bff;
+      font-size: 18px; /* Increased font size for links */
+    }
+
+    .sidebar li a:hover {
+      text-decoration: underline;
+    }
+
+    /* Main content */
+    .content {
+      flex-grow: 1;
+      padding: 20px;
+    }
+
+    .content h1 {
+      text-align: center;
+      font-size: 24px;
+      margin-bottom: 20px;
+    }
+
+    .content p {
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    /* Highlight.js code block styling */
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      border-radius: 5px;
+      overflow-x: auto;
+    }
+
+    .content h2 {
+      margin-top: 40px;
+      font-size: 20px;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <h2>Documentation</h2>
+      <ul>
+        <li><a href="#getting-started">Getting Started</a></li>
+        <li><a href="#deployment">Deployment</a></li>
+        <li><a href="#installation">Installation</a></li>
+        <li><a href="#examples">Examples</a></li>
+        <li><a href="#websockets">WebSockets</a></li>
+        <li><a href="#structs">Key Structs</a></li>
+        <li><a href="#docker">Docker</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </div>
+
+    <!-- Main content -->
+    <div class="content">
+      <h1>Welcome to c-web-modules Documentation</h1>
+
+      <h2 id="getting-started">Getting Started</h2>
+      <p>c-web-modules is a proof-of-concept modular framework for web development in C. Inspired by kernel modules, it enables dynamic runtime compilation and deployment of C code directly to the server. No precompilation is required.</p>
+
+      <h3>Server</h3>
+      <p>The c-web-modules server is a simple web server that listens on port 8080. It provides the foundation for loading and executing modules at runtime. The server relies on the following libraries:</p>
+      <ul>
+        <li>openssl: For secure connections (planned) and hashing</li>
+        <li>sqlite3: For database management</li>
+        <li>jansson: For JSON parsing and manipulation</li>
+      </ul>
+      <p>Check the <a href="#installation">Installation</a> section for setup details. The easiest way to start the server is by using <a href="#docker">Docker</a>.</p>
+
+      <h3>Modules</h3>
+      <p>Modules are dynamically loaded pieces of C code that define routes and WebSocket handlers. The most important part of the module is the module_t config. </p>
+      <p>For a module to be loaded into the server, the module needs to define a module_t struct with the name config. Preferbaly with the `export` macro. The module_t config struct defines the 
+        module name, author, routes, and WebSocket handlers. It also allows handlers to call when the module is loaded and unloaded.</p>
+      <pre><code class="language-c">/* Module information */
+typedef struct module {
+    char name[128];
+    char author[128];
+    route_info_t routes[10];
+    int size;
+    websocket_info_t websockets[10];
+    int ws_size;
+    
+    void (*onload)(void);
+    void (*unload)(void);
+} module_t;
+      </code></pre>
+      <p>Check the <a href="#examples">Examples</a> section for sample modules.</p>
+
+       <p> A route is defined by a path, method, function and flags. The path needs to be unique for the server, or else the module will not be loaded.</p>
+       <p> Websockets are defined by a path, on_open, on_message and on_close. Websocket connections will not be closed when a module is reloaded or changed. This needs to be done by the user. </p>
+
+
+       <h2 id="deployment">Deployment</h2>
+      <p> The most simple way to load a module is to use curl:</p>
+      <pre><code class="language-bash">curl -X POST -d @path/to/module.c http://localhost:8080/mgnt</code></pre>
+
+       <p>You can also deploy modules dynamically with configuration files:</p>
+       <pre><code class="language-bash">
+ ./cweb deploy path/to/module.c
+ # Using a config file (routes.ini)
+ server_url=http://localhost:8080/mgnt
+ 
+ [modules]
+ example1.c
+ example2.c
+       </code></pre>
+      
+      <h2 id="examples">Examples</h2>
+
+      <pre><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;cweb.h&gt;
+
+static int counter = 0;
+static const char* template = 
+    "<html>\n"
+    "  <body>\n"
+    "    <h1>Counter: %d</h1>\n"
+    "  </body>\n"
+    "</html>\n";
+
+/* Route: /counter - Method GET */
+static int index_route(struct http_request *req, struct http_response *res) {
+    snprintf(res->body, HTTP_RESPONSE_SIZE, template, counter++);
+    res->status = HTTP_200_OK;
+    return 0;
+}
+
+/* Define the routes for the module */
+export module_t config = {
+    .name = "counter",
+    .author = "cweb",
+    .routes = {
+        {"/counter", "GET", index_route, NONE},
+    },
+    .size = 1,
+};</code></pre>
+
+      <p>For more examples, check out the following links:</p>
+      <ul>
+        <li><a href="https://github.com/joexbayer/c-web-modules/tree/main/example">GitHub Examples</a></li>
+      </ul>
+
+      <h2 id="installation">Installation</h2>
+      <p>Install the required dependencies for Linux or MacOS:</p>
+      <p>For Debian:</p>
+      <ul>
+        <li>sudo apt-get install libssl-dev</li>
+        <li>sudo apt-get install libsqlite3-dev</li>
+        <li>sudo apt-get install libjansson-dev</li>
+      </ul>
+      <p>For Arch Linux:</p>
+      <ul>
+        <li>sudo pacman -S openssl</li>
+        <li>sudo pacman -S sqlite</li>
+        <li>sudo pacman -S jansson</li>
+      </ul>
+      <p>For MacOS:</p>
+      <ul>
+        <li>brew install openssl</li>
+        <li>brew install sqlite3</li>
+        <li>brew install jansson</li>
+      </ul>
+
+      <p>Compile and run the server:</p>
+      <pre><code class="language-bash">make
+make run</code></pre>
+
+      <h2 id="websockets">WebSockets</h2>
+      <p>WebSockets enable real-time communication between clients and the server. Here's an example module with WebSocket handlers:</p>
+      <pre><code class="language-c">
+#include <cweb.h>
+
+void on_open(struct websocket *ws) {
+    printf("WebSocket connection opened\n");
+}
+
+void on_message(struct websocket *ws, const char *message, size_t length) {
+    printf("Message received: %.*s\n", (int)length, message);
+}
+
+void on_close(struct websocket *ws) {
+    printf("WebSocket connection closed\n");
+}
+
+export module_t config = {
+    .name = "websocket_example",
+    .author = "cweb",
+    .websockets = {
+        {"/ws", on_open, on_message, on_close},
+    },
+    .ws_size = 1,
+};
+      </code></pre>
+
+      <h2 id="structs">Key Structs</h2>
+      <p>The following structs are central to the framework:</p>
+      <h3>HTTP Request</h3>
+      <pre><code class="language-c">
+struct http_request {
+    http_method_t method; // HTTP method (e.g., GET, POST)
+    char *path;           // Request path
+    char *body;           // Request body
+    int content_length;   // Length of the body
+    struct map *headers;  // HTTP headers
+    int websocket;        // Is this a WebSocket request?
+};
+      </code></pre>
+      <h3>HTTP Response</h3>
+      <pre><code class="language-c">
+struct http_response {
+    http_error_t status;  // HTTP status code
+    struct map *headers;  // Response headers
+    char *body;           // Response body
+};
+      </code></pre>
+      <h3>WebSocket</h3>
+      <pre><code class="language-c">
+struct websocket {
+    int client_fd;  // Client file descriptor
+    int (*send)(struct websocket* ws, const char *message, size_t length);
+    int (*close)(struct websocket* ws);
+};
+      </code></pre>
+
+      <h2 id="docker">Docker</h2>
+      <p>Build and run the server using Docker:</p>
+      <pre><code class="language-bash">
+docker build -t cweb .
+docker run -p 8080:8080 cweb
+      </code></pre>
+      <p>Or use Docker Compose:</p>
+      <pre><code class="language-bash">
+docker-compose up --build
+      </code></pre>
+
+      <h2 id="faq">FAQ</h2>
+      <p>Frequently asked questions about <strong>c-web-modules</strong>.</p>
+      <pre><code class="language-bash">
+Q: How do I restart the server?
+A: Use `make run` after making changes.
+
+Q: How do I debug a failing module?
+A: Check logs in the console or the HTTP response from /mgnt.
+      </code></pre>
+    </div>
+  </div>
+</body>
+</html>
