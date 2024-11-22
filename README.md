@@ -7,6 +7,10 @@
 
 Welcome to **c-web-modules**, a modular and efficient approach to web development in C. Inspired by kernel modules and AWS Lambda, this project allows you to upload C code directly to the server, which compiles and deploys it at runtime. No precompilation is necessary, and the server can easily be upgraded to include more features or external libraries.
 
+## Documentation
+
+For more detailed information, please refer to the [official documentation](https://joexbayer.github.io/c-web-modules/).
+
 ## Addressing the Challenges of C for Web Development  
 
 C isn’t typically the go-to for web development, and there are valid reasons why. Here’s how **c-web-modules** tackles some of the common concerns:  

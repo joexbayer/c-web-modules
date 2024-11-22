@@ -246,7 +246,6 @@ static void thread_handle_client(void *arg) {
         }
         buffer[read_size] = '\0';
 
-        printf("[SERVER] Received %d bytes\n", read_size);
         printf("[SERVER] Received %s\n", buffer);
 
         struct timespec start, end;
