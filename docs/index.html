@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,61 +12,94 @@
     body {
       margin: 0;
       font-family: Georgia, "Times New Roman", serif;
+      background-color: #f4f4f4;
       display: flex;
       justify-content: center;
+      align-items: flex-start;
       min-height: 100vh;
-      background-color: #f4f4f4;
     }
 
-    /* Centered container */
+    /* Container */
     .container {
-      width: 80%;
-      max-width: 1000px;
+      width: 90%;
+      max-width: 1200px;
       background: white;
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-      display: flex;
-      flex-direction: row;
       border-radius: 8px;
       overflow: hidden;
+      display: flex;
     }
 
     /* Sidebar */
     .sidebar {
       width: 250px;
-      background-color: #f8f9fa;
+      background-color: #343a40;
+      color: white;
+      display: flex;
+      flex-direction: column;
       padding: 20px;
-      border-right: 1px solid #ddd;
-      font-size: 24px;
+      box-sizing: border-box;
+      transition: transform 0.3s ease-in-out;
     }
 
     .sidebar h2 {
-      margin-top: 0;
-      font-size: 18px;
+      font-size: 20px;
+      margin-bottom: 20px;
+      color: #f8f9fa;
     }
 
     .sidebar ul {
-      list-style-type: none;
-      padding-left: 0;
+      list-style: none;
+      padding: 0;
+      margin: 0;
     }
 
     .sidebar li {
-      margin: 10px 0;
+      margin: 15px 0;
     }
 
     .sidebar li a {
       text-decoration: none;
-      color: #007bff;
-      font-size: 18px; /* Increased font size for links */
+      color: #f8f9fa;
+      font-size: 16px;
+      padding: 10px;
+      display: block;
+      border-radius: 4px;
+      transition: background-color 0.3s ease;
     }
 
     .sidebar li a:hover {
-      text-decoration: underline;
+      background-color: #495057;
+    }
+
+    /* Mobile sidebar behavior */
+    .sidebar.collapsed {
+      transform: translateX(-250px);
+    }
+
+    .menu-toggle {
+      display: none;
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      background: #343a40;
+      color: white;
+      border: none;
+      font-size: 18px;
+      padding: 10px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .menu-toggle.open {
+      background: #495057;
     }
 
     /* Main content */
     .content {
       flex-grow: 1;
       padding: 20px;
+      box-sizing: border-box;
     }
 
     .content h1 {
@@ -79,7 +113,7 @@
       line-height: 1.6;
     }
 
-    /* Highlight.js code block styling */
+    /* Code block styling */
     pre {
       background: #f4f4f4;
       padding: 10px;
@@ -92,8 +126,42 @@
       font-size: 20px;
       color: #333;
     }
+
+    /* Responsive design */
+    @media (max-width: 768px) {
+      body {
+        justify-content: flex-start;
+      }
+
+      .container {
+        flex-direction: column;
+      }
+
+      .menu-toggle {
+        display: block;
+      }
+
+      .sidebar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        transform: translateX(-250px);
+        z-index: 1000;
+      }
+
+      .sidebar.open {
+        transform: translateX(0);
+      }
+
+      .content {
+        padding: 20px;
+        margin-top: 60px;
+      }
+    }
   </style>
 </head>
+
 <body>
   <div class="container">
     <!-- Sidebar -->
@@ -116,21 +184,28 @@
       <h1>Welcome to c-web-modules Documentation</h1>
 
       <h2 id="getting-started">Getting Started</h2>
-      <p>c-web-modules is a proof-of-concept modular framework for web development in C. Inspired by kernel modules, it enables dynamic runtime compilation and deployment of C code directly to the server. No precompilation is required.</p>
+      <p>c-web-modules is a proof-of-concept modular framework for web development in C. Inspired by kernel modules, it
+        enables dynamic runtime compilation and deployment of C code directly to the server. No precompilation is
+        required.</p>
 
       <h3>Server</h3>
-      <p>The c-web-modules server is a simple web server that listens on port 8080. It provides the foundation for loading and executing modules at runtime. The server relies on the following libraries:</p>
+      <p>The c-web-modules server is a simple web server that listens on port 8080. It provides the foundation for
+        loading and executing modules at runtime. The server relies on the following libraries:</p>
       <ul>
         <li>openssl: For secure connections (planned) and hashing</li>
         <li>sqlite3: For database management</li>
         <li>jansson: For JSON parsing and manipulation</li>
       </ul>
-      <p>Check the <a href="#installation">Installation</a> section for setup details. The easiest way to start the server is by using <a href="#docker">Docker</a>.</p>
+      <p>Check the <a href="#installation">Installation</a> section for setup details. The easiest way to start the
+        server is by using <a href="#docker">Docker</a>.</p>
 
       <h3>Modules</h3>
-      <p>Modules are dynamically loaded pieces of C code that define routes and WebSocket handlers. The most important part of the module is the module_t config. </p>
-      <p>For a module to be loaded into the server, the module needs to define a module_t struct with the name config. Preferbaly with the `export` macro. The module_t config struct defines the 
-        module name, author, routes, and WebSocket handlers. It also allows handlers to call when the module is loaded and unloaded.</p>
+      <p>Modules are dynamically loaded pieces of C code that define routes and WebSocket handlers. The most important
+        part of the module is the module_t config. </p>
+      <p>For a module to be loaded into the server, the module needs to define a module_t struct with the name config.
+        Preferbaly with the `export` macro. The module_t config struct defines the
+        module name, author, routes, and WebSocket handlers. It also allows handlers to call when the module is loaded
+        and unloaded.</p>
       <pre><code class="language-c">/* Module information */
 typedef struct module {
     char name[128];
@@ -146,16 +221,18 @@ typedef struct module {
       </code></pre>
       <p>Check the <a href="#examples">Examples</a> section for sample modules.</p>
 
-       <p> A route is defined by a path, method, function and flags. The path needs to be unique for the server, or else the module will not be loaded.</p>
-       <p> Websockets are defined by a path, on_open, on_message and on_close. Websocket connections will not be closed when a module is reloaded or changed. This needs to be done by the user. </p>
+      <p> A route is defined by a path, method, function and flags. The path needs to be unique for the server, or else
+        the module will not be loaded.</p>
+      <p> Websockets are defined by a path, on_open, on_message and on_close. Websocket connections will not be closed
+        when a module is reloaded or changed. This needs to be done by the user. </p>
 
 
-       <h2 id="deployment">Deployment</h2>
+      <h2 id="deployment">Deployment</h2>
       <p> The most simple way to load a module is to use curl:</p>
       <pre><code class="language-bash">curl -X POST -d @path/to/module.c http://localhost:8080/mgnt</code></pre>
 
-       <p>You can also deploy modules dynamically with configuration files:</p>
-       <pre><code class="language-bash">
+      <p>You can also deploy modules dynamically with configuration files:</p>
+      <pre><code class="language-bash">
  ./cweb deploy path/to/module.c
  # Using a config file (routes.ini)
  server_url=http://localhost:8080/mgnt
@@ -164,7 +241,7 @@ typedef struct module {
  example1.c
  example2.c
        </code></pre>
-      
+
       <h2 id="examples">Examples</h2>
 
       <pre><code class="language-c">#include &lt;stdio.h&gt;
@@ -226,7 +303,8 @@ export module_t config = {
 make run</code></pre>
 
       <h2 id="websockets">WebSockets</h2>
-      <p>WebSockets enable real-time communication between clients and the server. Here's an example module with WebSocket handlers:</p>
+      <p>WebSockets enable real-time communication between clients and the server. Here's an example module with
+        WebSocket handlers:</p>
       <pre><code class="language-c">
 #include <cweb.h>
 
@@ -305,4 +383,5 @@ A: Check logs in the console or the HTTP response from /mgnt.
     </div>
   </div>
 </body>
+
 </html>
