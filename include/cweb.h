@@ -47,10 +47,15 @@ typedef struct module {
     void (*unload)(void);
 } module_t;
 
+struct symbols {
+    void* (*resolv)(const char* module, const char* symbol);
+};
+
 /* Exposed primitives */
 extern struct container* cache;
 extern struct scheduler* scheduler;
 extern struct sqldb* database;
+extern struct symbols* symbols;
 // KeyValue store
 // Queues
 // Authentication/Sessions.

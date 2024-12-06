@@ -87,7 +87,7 @@ __attribute__((constructor)) void scheduler_init() {
         perror("Error creating scheduler thread");
         exit(EXIT_FAILURE);
     }
-    /* We dont wnat to pthread_detach(scheduler_thread); as the pthread_join in the destructor.*/
+    /* We dont want to pthread_detach(scheduler_thread); as the pthread_join in the destructor.*/
 }
 
 __attribute__((destructor)) void scheduler_destroy() {
