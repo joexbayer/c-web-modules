@@ -226,7 +226,6 @@ static void thread_clean_up_request(struct http_request *req) {
 
     if(req->params != NULL){
         for (size_t i = 0; i < map_size(req->params); i++) {
-            printf("Freeing %s\n", req->params->entries[i].key);
             free(req->params->entries[i].value);
         }
         map_destroy(req->params);
@@ -234,7 +233,6 @@ static void thread_clean_up_request(struct http_request *req) {
 
     if(req->headers != NULL){
         for (size_t i = 0; i < map_size(req->headers); i++) {
-            printf("Freeing %s\n", req->headers->entries[i].key);
             free(req->headers->entries[i].value);
         }
         map_destroy(req->headers);
@@ -242,7 +240,6 @@ static void thread_clean_up_request(struct http_request *req) {
 
     if(req->data != NULL){
         for (size_t i = 0; i < map_size(req->data); i++) {
-            printf("Freeing %s\n", req->data->entries[i].key);
             free(req->data->entries[i].value);
         }
         map_destroy(req->data);
@@ -252,11 +249,8 @@ static void thread_clean_up_request(struct http_request *req) {
 
 static void thread_clean_up(struct http_request *req, struct http_response *res) {
     thread_clean_up_request(req);
-    printf("Freeing response\n");
     map_destroy(res->headers);
-    printf("Freeing body %p\n", res->body);
     free(res->body);
-    printf("Freeing Done.\n");
 }
 
 static void thread_set_timeout(int sockfd, int seconds) {
@@ -285,8 +279,6 @@ static void thread_handle_client(void *arg) {
             return;
         }
         buffer[read_size] = '\0';
-
-        printf("[SERVER] Received %s\n", buffer);
 
         struct timespec start, end;
         clock_gettime(CLOCK_MONOTONIC, &start);

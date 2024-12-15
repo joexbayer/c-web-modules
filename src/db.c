@@ -39,6 +39,7 @@ __attribute__((visibility("default"))) struct sqldb *exposed_sqldb = &sql_db;
 static int db_exec(const char *sql, int (*callback)(void *, int, char **, char **), void *data) {
     char *err_msg = 0;
     int rc = sqlite3_exec(sql_db.db, sql, callback, data, &err_msg);
+    printf("[SQL] %s\n", sql);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "SQL error: %s\n", err_msg);
         sqlite3_free(err_msg);
@@ -47,6 +48,7 @@ static int db_exec(const char *sql, int (*callback)(void *, int, char **, char *
 }
 
 static int db_prepare(sqlite3 *db, const char *sql, int len, sqlite3_stmt **stmt, const char **tail) {
+    printf("[SQL] %s\n", sql);
     return sqlite3_prepare_v2(db, sql, len, stmt, tail);
 }
 

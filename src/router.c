@@ -27,8 +27,7 @@ struct gateway {
     int count;
 } gateway = {
     .rwlock = PTHREAD_RWLOCK_INITIALIZER,
-    .count = 0,
-    .entries = {0}
+    .count = 0
 };
 
 static int route_save_to_disk(char* filename);
