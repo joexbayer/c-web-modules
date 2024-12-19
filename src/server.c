@@ -14,6 +14,9 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <openssl/crypto.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
 
 #include "http.h"
 #include "router.h"
@@ -51,17 +54,35 @@ struct cidr_prefix {
 struct connection {
     int sockfd;
     struct sockaddr_in address;
+    SSL *ssl;
 };
 
 static struct thread_pool *pool;
+__attribute__((used)) static SSL_CTX *ssl_ctx; // Global SSL context
+
+typedef enum env {
+    DEV,
+    PROD
+} env_t;
+
 static struct server_config {
-    int port;
+    uint16_t port;
     int thread_pool_size;
-    int silent_mode;
+    char silent_mode;
+    const char* certificate;
+    const char* private_key;
+    env_t environment;
 } config = {
     .port = DEFAULT_PORT,
     .thread_pool_size = 0,
     .silent_mode = 0,
+    .certificate = "server.crt",
+    .private_key = "server.key",
+#ifdef PRODUCTION
+    .environment = PROD
+#else
+    .environment = DEV
+#endif 
 };
 
 // static int parse_cidr(const char *cidr_str, struct cidr_prefix *result) {
@@ -94,6 +115,37 @@ static struct server_config {
 void ws_handle_client(int sd, struct http_request *req, struct http_response *res, struct ws_info *ws_module_info);
 int ws_confirm_open(int sd);
 
+#ifdef PRODUCTION
+static SSL_CTX* initialize_ssl_context() {
+    const SSL_METHOD *method = TLS_server_method();
+    SSL_CTX *ctx = SSL_CTX_new(method);
+    if (!ctx) {
+        perror("[ERROR] Failed to initialize SSL context");
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    if (SSL_CTX_use_certificate_file(ctx, config.certificate, SSL_FILETYPE_PEM) <= 0) {
+        perror("[ERROR] Failed to load server certificate");
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    if (SSL_CTX_use_PrivateKey_file(ctx, config.private_key , SSL_FILETYPE_PEM) <= 0) {
+        perror("[ERROR] Failed to load server private key");
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    if (!SSL_CTX_check_private_key(ctx)) {
+        fprintf(stderr, "[ERROR] Private key does not match the certificate\n");
+        exit(EXIT_FAILURE);
+    }
+
+    return ctx;
+}
+#endif
+
 static struct connection server_init(uint16_t port) {
     struct connection s;
     s.sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -125,7 +177,6 @@ static struct connection server_init(uint16_t port) {
         exit(EXIT_FAILURE);
     }
 
-    printf("[SERVER] Server is listening on port %d\n", port);
     return s;
 }
 
@@ -144,6 +195,24 @@ static struct connection* server_accept(struct connection s) {
         free(c);
         return NULL;
     }
+
+#ifdef PRODUCTION
+    c->ssl = SSL_new(ssl_ctx);
+    if (!c->ssl) {
+        perror("[ERROR] SSL initialization failed");
+        free(c);
+        return NULL;
+    }
+
+    SSL_set_fd(c->ssl, c->sockfd);
+    if (SSL_accept(c->ssl) <= 0) {
+        perror("[ERROR] SSL handshake failed");
+        SSL_free(c->ssl);
+        close(c->sockfd);
+        free(c);
+        return NULL;
+    }
+#endif
 
     return c;
 }
@@ -244,7 +313,6 @@ static void thread_clean_up_request(struct http_request *req) {
         }
         map_destroy(req->data);
     }
-
 }
 
 static void thread_clean_up(struct http_request *req, struct http_response *res) {
@@ -269,15 +337,23 @@ static void thread_handle_client(void *arg) {
 
         /* Read initial request */
         char buffer[8*1024] = {0};
+#ifdef PRODUCTION
+        int read_size = SSL_read(c->ssl, buffer, sizeof(buffer) - 1);
+        if (read_size <= 0) {
+            if (SSL_get_error(c->ssl, read_size) == SSL_ERROR_ZERO_RETURN) {
+                break; // Client closed the connection
+            }
+            perror("[ERROR] SSL read failed");
+            break;
+        }
+#else
         int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
-            if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                printf("[SERVER] Client read timeout\n");
-            }
-            close(c->sockfd);
-            free(c);
-            return;
+            perror("[ERROR] Read failed");
+            break;
         }
+#endif
+
         buffer[read_size] = '\0';
 
         struct timespec start, end;
@@ -290,19 +366,18 @@ static void thread_handle_client(void *arg) {
         if(req.method == HTTP_ERR) {
             dprintf(c->sockfd, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", http_errors[req.status]);
             thread_clean_up_request(&req);
-            close(c->sockfd);
-            free(c);
-            return;
+            goto thread_handle_client_exit;
         }
 
         /* Read the rest of the request */
         while (req.content_length > read_size) {
+#ifdef PRODUCTION
+            ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
+#else
             ret = read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+#endif
             if (ret <= 0) {
-                /* Client disconnected */
-                close(c->sockfd);
-                free(c);
-                return;
+                break;
             }
 
             read_size += ret;
@@ -322,17 +397,13 @@ static void thread_handle_client(void *arg) {
         res.headers = map_create(32);
         if (res.headers == NULL) {
             perror("[ERROR] Error creating map");
-            close(c->sockfd);
-            free(c);
-            return;
+            goto thread_handle_client_exit;
         }
 
         res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
         if (res.body == NULL) {
             perror("[ERROR] Error allocating memory for response body");
-            close(c->sockfd);
-            free(c);
-            return;
+            goto thread_handle_client_exit;
         }
 
         gateway(c->sockfd, &req, &res);
@@ -355,10 +426,18 @@ static void thread_handle_client(void *arg) {
         char response[8*1024] = {0};
         build_headers(&res, headers, sizeof(headers));
         snprintf(response, sizeof(response), HTTP_VERSION" %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
-        ret = write(c->sockfd, response, strlen(response));
-        if (ret < 0) {
-            perror("[ERROR] Error writing to socket");
+
+#ifdef PRODUCTION        
+        if (SSL_write(c->ssl, response, strlen(response)) <= 0) {
+            perror("[ERROR] SSL write failed");
+            break;
         }
+#else
+        if (write(c->sockfd, response, strlen(response)) <= 0) {
+            perror("[ERROR] Write failed");
+            break;
+        }
+#endif
 
         double time_taken;
         measure_time(&start, &end, &time_taken);
@@ -385,12 +464,15 @@ static void thread_handle_client(void *arg) {
          * HTTP/1.1 connections MUST be persistent by default unless a Connection: close header is explicitly included.
          */
         if (close_connection) {
-            close(c->sockfd);
-            free(c);
-            return;
+            goto thread_handle_client_exit;
         }
     }
+thread_handle_client_exit:
 
+#ifdef PRODUCTION
+    SSL_shutdown(c->ssl);
+    SSL_free(c->ssl);
+#endif
     close(c->sockfd);
     free(c);
     return;
@@ -434,6 +516,15 @@ int main(int argc, char *argv[]) {
         }
     }
 
+#ifdef PRODUCTION
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();
+
+    ssl_ctx = initialize_ssl_context();
+    printf("[SERVER] SSL context initialized\n");
+#endif
+
     int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
     printf("[SERVER] Detected %d cores\n", num_cores);
 
@@ -460,6 +551,11 @@ int main(int argc, char *argv[]) {
     }
 
     /* Main server loop */
+    printf("\n Version: %s\n", "0.0.1");
+    printf(" Thread Pool Size: %d\n", pool->max_threads);
+    printf(" Environment: %s\n", config.environment == PROD ? "Production" : "Development");
+    printf(" PID: %d\n", getpid());
+    printf(" Listening on %s://%s:%d\n",config.environment == PROD ? "https" : "http", inet_ntoa(s.address.sin_addr), ntohs(s.address.sin_port));
     while (!stop) {
         struct connection *client = server_accept(s);
         if (client == NULL) {
@@ -477,6 +573,9 @@ int main(int argc, char *argv[]) {
     /* Clean up */
     thread_pool_destroy(pool);
     close(s.sockfd);
+#ifdef PRODUCTION
+    SSL_CTX_free(ssl_ctx);
+#endif
     printf("[SERVER] Server shutting down gracefully.\n");
 
     return 0;

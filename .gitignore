@@ -57,3 +57,5 @@ bin/
 modules/routes.dat
 tmp/
 db.sqlite3
+server.key
+server.crt

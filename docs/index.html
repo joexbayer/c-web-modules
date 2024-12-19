@@ -171,6 +171,7 @@
         <li><a href="#deployment">Deployment</a></li>
         <li><a href="#installation">Installation</a></li>
         <li><a href="#examples">Examples</a></li>
+        <li><a href="#environments">Environments</a></li>
         <li><a href="#websockets">WebSockets</a></li>
         <li><a href="#structs">Key Structs</a></li>
         <li><a href="#docker">Docker</a></li>
@@ -329,6 +330,22 @@ export module_t config = {
 };
       </code></pre>
 
+      <h2 id="environments">Environments</h2>
+      <p>The c-web-modules framework supports multiple environments.</p>
+      <p>By default, the development environment is used, which uses HTTP. For production, the server uses HTTPS, which
+        requires `server.crt` and `server.key` files. They can be generated using:</p>
+      <pre><code class="language-bash">openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt -days 365 -nodes</code></pre>
+      <p>Alternatively, you can use the `production.sh` script, which will also build the server with the `PRODUCTION`
+        flag.</p>
+
+      <h3 id="production">Production</h3>
+      <p>To build the server for production, use the <code>production.sh</code> script:</p>
+      <pre><code class="language-bash">./production.sh</code></pre>
+      <p>To build a Docker image for production, use the <code>--docker</code> flag:</p>
+      <pre><code class="language-bash">./production.sh --docker</code></pre>
+      <p>This will create a <code>cweb:production</code> Docker image that you can run with:</p>
+      <pre><code class="language-bash">docker run  -p 8080:8080 cweb:production</code></pre>
+
       <h2 id="structs">Key Structs</h2>
       <p>The following structs are central to the framework:</p>
       <h3>HTTP Request</h3>
@@ -361,14 +378,13 @@ struct websocket {
 
       <h2 id="docker">Docker</h2>
       <p>Build and run the server using Docker:</p>
-      <pre><code class="language-bash">
-docker build -t cweb .
-docker run -p 8080:8080 cweb
-      </code></pre>
+      <pre><code class="language-bash">docker build -t cweb .
+docker run -p 8080:8080 --mount type=bind,source=$(pwd)/modules,target=/app/modules cweb</code></pre>
       <p>Or use Docker Compose:</p>
-      <pre><code class="language-bash">
-docker-compose up --build
-      </code></pre>
+      <pre><code class="language-bash">docker-compose up --build</code></pre>
+      <p>For non-volatile modules during restarts, you need to mount the modules directory:</p>
+      <pre><code class="language-yaml">volumes:
+  - ./modules:/app/modules</code></pre>
 
       <h2 id="faq">FAQ</h2>
       <p>Frequently asked questions about <strong>c-web-modules</strong>.</p>

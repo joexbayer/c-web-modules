@@ -24,10 +24,12 @@ JANSSON_PREFIX := $(shell brew --prefix jansson)
 	CFLAGS += -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/opt/jansson/include -fsanitize=thread,undefined
 	LDFLAGS += -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/opt/jansson/lib
 endif
-
 # Export dynamic symbols on Linux
 ifeq ($(shell uname), Linux)
 	CFLAGS += -Wl,--export-dynamic -fsanitize=thread,undefined,bounds
+endif
+ifdef PRODUCTION
+CFLAGS += -DPRODUCTION
 endif
 
 SRCS = $(wildcard $(SRC_DIR)/*.c) 
