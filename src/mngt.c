@@ -14,8 +14,8 @@
 
 #define TMP_DIR "modules"
 #ifdef __APPLE__
-    #define CFLAGS "-fPIC -shared -I./include -I/opt/homebrew/opt/jansson/include"
-    #define LIBS "-L./libs -lmodule -L/opt/homebrew/opt/jansson/lib -ljansson -lsqlite3 "
+    #define CFLAGS "-fPIC -shared -I./include -I/opt/homebrew/opt/jansson/include -I/opt/homebrew/opt/openssl@3/include"
+    #define LIBS "-L./libs -lmodule -L/opt/homebrew/opt/jansson/lib -ljansson -lsqlite3 -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto"
 #elif __linux__
     #define CFLAGS "-fPIC -shared -I./include -Wl,-rpath=./libs" /* -Wl,-rpath needed for archlinux. */
     #define LIBS "-L./libs -lmodule -ljansson -lsqlite3"

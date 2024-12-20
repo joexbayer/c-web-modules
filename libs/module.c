@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <container.h>
 #include <scheduler.h>
+#include <crypto.h>
 #include <db.h>
 #include <cweb.h>
 
@@ -24,6 +25,7 @@
 struct scheduler* scheduler = NULL;
 struct sqldb *database = NULL;
 struct container* cache = NULL;
+struct crypto* crypto = NULL;
 /* Global handle to access server symbols */
 static void *dlhandle = NULL;
 
@@ -44,6 +46,7 @@ __attribute__((constructor)) void module_constructor() {
     LOAD_SYMBOL(dlhandle, "exposed_container", struct container, cache);
     LOAD_SYMBOL(dlhandle, "exposed_scheduler", struct scheduler, scheduler);
     LOAD_SYMBOL(dlhandle, "exposed_sqldb", struct sqldb, database);
+    LOAD_SYMBOL(dlhandle, "crypto_module", struct crypto, crypto);
 
     void* resolv = dlsym(dlhandle, "resolv");
     if (!resolv) {

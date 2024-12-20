@@ -17,7 +17,6 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-
 #include "http.h"
 #include "router.h"
 #include "cweb.h"
@@ -25,6 +24,7 @@
 #include "db.h"
 #include "scheduler.h"
 #include "pool.h"
+#include "crypto.h"
 
 #define DEFAULT_PORT 8080
 #define ACCEPT_BACKLOG 128
@@ -58,7 +58,6 @@ struct connection {
 };
 
 static struct thread_pool *pool;
-__attribute__((used)) static SSL_CTX *ssl_ctx; // Global SSL context
 
 typedef enum env {
     DEV,
@@ -69,15 +68,11 @@ static struct server_config {
     uint16_t port;
     int thread_pool_size;
     char silent_mode;
-    const char* certificate;
-    const char* private_key;
     env_t environment;
 } config = {
     .port = DEFAULT_PORT,
     .thread_pool_size = 0,
     .silent_mode = 0,
-    .certificate = "server.crt",
-    .private_key = "server.key",
 #ifdef PRODUCTION
     .environment = PROD
 #else
@@ -116,34 +111,6 @@ void ws_handle_client(int sd, struct http_request *req, struct http_response *re
 int ws_confirm_open(int sd);
 
 #ifdef PRODUCTION
-static SSL_CTX* initialize_ssl_context() {
-    const SSL_METHOD *method = TLS_server_method();
-    SSL_CTX *ctx = SSL_CTX_new(method);
-    if (!ctx) {
-        perror("[ERROR] Failed to initialize SSL context");
-        ERR_print_errors_fp(stderr);
-        exit(EXIT_FAILURE);
-    }
-
-    if (SSL_CTX_use_certificate_file(ctx, config.certificate, SSL_FILETYPE_PEM) <= 0) {
-        perror("[ERROR] Failed to load server certificate");
-        ERR_print_errors_fp(stderr);
-        exit(EXIT_FAILURE);
-    }
-
-    if (SSL_CTX_use_PrivateKey_file(ctx, config.private_key , SSL_FILETYPE_PEM) <= 0) {
-        perror("[ERROR] Failed to load server private key");
-        ERR_print_errors_fp(stderr);
-        exit(EXIT_FAILURE);
-    }
-
-    if (!SSL_CTX_check_private_key(ctx)) {
-        fprintf(stderr, "[ERROR] Private key does not match the certificate\n");
-        exit(EXIT_FAILURE);
-    }
-
-    return ctx;
-}
 #endif
 
 static struct connection server_init(uint16_t port) {
@@ -516,12 +483,16 @@ int main(int argc, char *argv[]) {
         }
     }
 
-#ifdef PRODUCTION
-    SSL_library_init();
-    OpenSSL_add_all_algorithms();
-    SSL_load_error_strings();
+    /* Moved to crypto.c */
+    // SSL_library_init();
+    // OpenSSL_add_all_algorithms();
+    // SSL_load_error_strings();
 
-    ssl_ctx = initialize_ssl_context();
+#ifdef PRODUCTION
+    if(ssl_ctx == NULL) {
+        fprintf(stderr, "[ERROR] SSL context is not initilized\n");
+        exit(EXIT_FAILURE);
+    }
     printf("[SERVER] SSL context initialized\n");
 #endif
 
@@ -573,9 +544,6 @@ int main(int argc, char *argv[]) {
     /* Clean up */
     thread_pool_destroy(pool);
     close(s.sockfd);
-#ifdef PRODUCTION
-    SSL_CTX_free(ssl_ctx);
-#endif
     printf("[SERVER] Server shutting down gracefully.\n");
 
     return 0;
