@@ -149,6 +149,7 @@ static struct connection server_init(uint16_t port) {
 
 static struct connection* server_accept(struct connection s) {
     struct connection *c = (struct connection *)malloc(sizeof(struct connection));
+    memset(c, 0, sizeof(struct connection));
     if (c == NULL) {
         perror("Error allocating memory for client");
         close(s.sockfd);
@@ -295,9 +296,19 @@ static void thread_set_timeout(int sockfd, int seconds) {
     setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
 }
 
+static void thread_clear_timeout(int sockfd) {
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+}
+
 static void thread_handle_client(void *arg) {
     int ret;
     struct connection *c = (struct connection *)arg;
+
+    printf("[INFO] Setting timeout for client %s\n", inet_ntoa(c->address.sin_addr));
+    thread_set_timeout(c->sockfd, 2);
 
     while(1){
         int close_connection = 0;
@@ -314,11 +325,13 @@ static void thread_handle_client(void *arg) {
             break;
         }
 #else
+        printf("[INFO] Reading from socket %d\n", c->sockfd);
         int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
             perror("[ERROR] Read failed");
             break;
         }
+        printf("[INFO] Read %d bytes from socket %d\n", read_size, c->sockfd);
 #endif
 
         buffer[read_size] = '\0';
@@ -381,7 +394,6 @@ static void thread_handle_client(void *arg) {
             close_connection = 1;
         }
 
-
         /* Servers MUST include a valid Date header in HTTP responses. */
         time_t now = time(NULL);
         struct tm tm = *gmtime(&now);
@@ -420,11 +432,9 @@ static void thread_handle_client(void *arg) {
 
         thread_clean_up(&req, &res);
         if (req.websocket) {
+            thread_clear_timeout(c->sockfd);
             ws_confirm_open(c->sockfd);
             return; /* Websocket connection is handled by the websocket thread */
-        } else {
-            /* Set timeout for client */
-            thread_set_timeout(c->sockfd, 2);
         }
 
         /**
@@ -515,7 +525,11 @@ int main(int argc, char *argv[]) {
     struct connection s = server_init(config.port);
 
     /* Initialize thread pool, 2 times numbers of cores */
+#ifdef PRODUCTION
     pool = thread_pool_init(config.thread_pool_size ? config.thread_pool_size : num_cores*2);
+#else
+    pool = thread_pool_init(2);
+#endif
     if (pool == NULL) {
         fprintf(stderr, "[ERROR] Failed to initialize thread pool\n");
         return 1;
@@ -536,6 +550,7 @@ int main(int argc, char *argv[]) {
             perror("Error accepting client");
             continue;
         }
+        printf("[SERVER] Accepted connection from %s:%d\n", inet_ntoa(client->address.sin_addr), ntohs(client->address.sin_port));
 
         /* Add client handling task to the thread pool */
         thread_pool_add_task(pool, thread_handle_client, client);

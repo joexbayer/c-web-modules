@@ -20,7 +20,7 @@ struct thread_pool *thread_pool_init(int num_threads) {
     pool->num_threads = num_threads;
     pool->max_threads = num_threads;
     pool->task_queue = NULL;
-    pool->stop = 0;
+    atomic_init(&pool->stop, 0);
     pool->queue_length = 0;
 
     pthread_mutex_init(&pool->lock, NULL);
@@ -47,25 +47,29 @@ struct thread_pool *thread_pool_init(int num_threads) {
     return pool;
 }
 
+static void cleanup_unlock(void *arg) {
+    pthread_mutex_unlock((pthread_mutex_t *)arg);
+}
 
 /* Worker thread function */
 static void *thread_pool_worker(void *arg) {
     struct thread_pool *pool = (struct thread_pool *)arg;
 
+    /* Ensure mutex is unlocked if the thread is cancelled. */
+    pthread_cleanup_push(cleanup_unlock, &pool->lock);
+
     while (1) {
         pthread_mutex_lock(&pool->lock);
 
-        /* Wait for tasks or stop signal */
-        while (pool->task_queue == NULL && !pool->stop) {
+        while (pool->task_queue == NULL && !atomic_load(&pool->stop)) {
             pthread_cond_wait(&pool->cond, &pool->lock);
         }
 
-        if (pool->stop) {
+        if (atomic_load(&pool->stop) && pool->task_queue == NULL) {  // Ensure no task remains when stopping.
             pthread_mutex_unlock(&pool->lock);
             break;
         }
 
-        /* Fetch a task from the queue */
         struct task *task = pool->task_queue;
         if (task != NULL) {
             pool->task_queue = task->next;
@@ -75,13 +79,15 @@ static void *thread_pool_worker(void *arg) {
 
         pthread_mutex_unlock(&pool->lock);
 
-        if (task != NULL) {
+        if (task != NULL && !atomic_load(&pool->stop)) {
             task->function(task->arg);
             atomic_fetch_sub(&pool->active_threads, 1);
             free(task);
         }
     }
 
+    /* Unlocks mutex if thread is cancelled while holding the lock. */
+    pthread_cleanup_pop(1);
     return NULL;
 }
 
@@ -125,14 +131,25 @@ void thread_pool_destroy(struct thread_pool *pool) {
     printf("[INFO] Destroying thread pool\n");
 
     pthread_mutex_lock(&pool->lock);
-    pool->stop = 1;
+    atomic_store(&pool->stop, 1);
+
+    printf("[INFO] Stopping all threads\n");
+
     pthread_cond_broadcast(&pool->cond);
     pthread_mutex_unlock(&pool->lock);
 
-    /* Join all threads */
+    printf("[INFO] Joining threads\n");
+
     for (int i = 0; i < pool->num_threads; i++) {
-        pthread_join(pool->threads[i], NULL);
+        int ret = pthread_join(pool->threads[i], NULL);
+        if (ret != 0) {
+            fprintf(stderr, "[ERROR] Failed to join thread %d: %s\n", i, strerror(ret));
+        }
+
+        printf("[INFO] Thread %d joined\n", i);
     }
+
+    printf("[INFO] All threads stopped\n");
 
     free(pool->threads);
     pthread_mutex_destroy(&pool->lock);
