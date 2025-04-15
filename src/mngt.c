@@ -30,7 +30,7 @@
  */
 int write_and_compile(const char *filename, const char *code, char *error_buffer, size_t buffer_size) {
     char source_path[SO_PATH_MAX_LEN], so_path[SO_PATH_MAX_LEN];
-    if (snprintf(source_path, sizeof(source_path), "%s/%s.c", TMP_DIR, filename) >= sizeof(source_path) ||
+    if (snprintf(source_path, sizeof(source_path), "%s/%s.c", TMP_DIR, filename) >= (int)sizeof(source_path) ||
         snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename) >= (int)sizeof(so_path)) {
         fprintf(stderr, "[ERROR] Path buffer overflow.\n");
         return -1;
@@ -92,6 +92,7 @@ int write_and_compile(const char *filename, const char *code, char *error_buffer
 static char* hash_code(char* code) {
 // Disable deprecation warning for SHA256, probably should fix this...
 #pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     char* hash_str = (char*)calloc(65, sizeof(char));
     if (hash_str == NULL) {
         fprintf(stderr, "[ERROR] Memory allocation failed for hash_str.\n");
