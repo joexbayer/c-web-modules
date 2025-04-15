@@ -31,7 +31,7 @@
 int write_and_compile(const char *filename, const char *code, char *error_buffer, size_t buffer_size) {
     char source_path[SO_PATH_MAX_LEN], so_path[SO_PATH_MAX_LEN];
     if (snprintf(source_path, sizeof(source_path), "%s/%s.c", TMP_DIR, filename) >= sizeof(source_path) ||
-        snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename) >= sizeof(so_path)) {
+        snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename) >= (int)sizeof(so_path)) {
         fprintf(stderr, "[ERROR] Path buffer overflow.\n");
         return -1;
     }
@@ -50,7 +50,7 @@ int write_and_compile(const char *filename, const char *code, char *error_buffer
     fclose(fp);
 
     char command[SO_PATH_MAX_LEN * 2 + 200];
-    if (snprintf(command, sizeof(command), "gcc "LIBS" "CFLAGS"  -o %s %s 2>&1", so_path, source_path) >= sizeof(command)) {
+    if (snprintf(command, sizeof(command), "gcc "LIBS" "CFLAGS"  -o %s %s 2>&1", so_path, source_path) >= (int)sizeof(command)) {
         fprintf(stderr, "[ERROR] Command buffer overflow.\n");
         unlink(source_path);
         return -1;
