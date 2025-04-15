@@ -30,8 +30,11 @@
  */
 int write_and_compile(const char *filename, const char *code, char *error_buffer, size_t buffer_size) {
     char source_path[SO_PATH_MAX_LEN], so_path[SO_PATH_MAX_LEN];
-    snprintf(source_path, sizeof(source_path), "%s/%s.c", TMP_DIR, filename);
-    snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename);
+    if (snprintf(source_path, sizeof(source_path), "%s/%s.c", TMP_DIR, filename) >= sizeof(source_path) ||
+        snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename) >= sizeof(so_path)) {
+        fprintf(stderr, "[ERROR] Path buffer overflow.\n");
+        return -1;
+    }
 
     /* Save code to file for compilation. */
     FILE *fp = fopen(source_path, "w");
@@ -39,11 +42,19 @@ int write_and_compile(const char *filename, const char *code, char *error_buffer
         perror("Error creating C file");
         return -1;
     }
-    fprintf(fp, "%s", code);
-    fclose(fp);    
+    if (fprintf(fp, "%s", code) < 0) {
+        perror("Error writing to C file");
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
 
     char command[SO_PATH_MAX_LEN * 2 + 200];
-    snprintf(command, sizeof(command), "gcc "LIBS" "CFLAGS"  -o %s %s 2>&1", so_path, source_path);
+    if (snprintf(command, sizeof(command), "gcc "LIBS" "CFLAGS"  -o %s %s 2>&1", so_path, source_path) >= sizeof(command)) {
+        fprintf(stderr, "[ERROR] Command buffer overflow.\n");
+        unlink(source_path);
+        return -1;
+    }
 
     FILE *gcc_output = popen(command, "r");
     if (gcc_output == NULL) {
@@ -81,14 +92,17 @@ int write_and_compile(const char *filename, const char *code, char *error_buffer
 static char* hash_code(char* code) {
 // Disable deprecation warning for SHA256, probably should fix this...
 #pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    char* hash_str = (char*)calloc(65, sizeof(char));
+    if (hash_str == NULL) {
+        fprintf(stderr, "[ERROR] Memory allocation failed for hash_str.\n");
+        return NULL;
+    }
     unsigned char hash[SHA256_DIGEST_LENGTH];
     SHA256_CTX sha256;
     SHA256_Init(&sha256);
     SHA256_Update(&sha256, code, strlen(code));
     SHA256_Final(hash, &sha256);
 
-    char* hash_str = (char*)malloc(65);
     for(int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
         sprintf(hash_str + (i * 2), "%02x", hash[i]);
     }

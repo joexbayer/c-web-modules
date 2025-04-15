@@ -11,8 +11,11 @@ static const char* template =
 
 /* Route: /counter - Method GET */
 static int index_route(struct http_request *req, struct http_response *res) {
-    snprintf(res->body, HTTP_RESPONSE_SIZE, template, counter++);
+    snprintf(res->body, HTTP_RESPONSE_SIZE, template, counter);
     res->status = HTTP_200_OK;
+
+    defer {counter++;}
+
     return 0;
 }
 

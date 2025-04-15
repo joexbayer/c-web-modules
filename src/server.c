@@ -306,8 +306,6 @@ static void thread_clear_timeout(int sockfd) {
 static void thread_handle_client(void *arg) {
     int ret;
     struct connection *c = (struct connection *)arg;
-
-    printf("[INFO] Setting timeout for client %s\n", inet_ntoa(c->address.sin_addr));
     thread_set_timeout(c->sockfd, 2);
 
     while(1){
@@ -325,13 +323,11 @@ static void thread_handle_client(void *arg) {
             break;
         }
 #else
-        printf("[INFO] Reading from socket %d\n", c->sockfd);
         int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
             perror("[ERROR] Read failed");
             break;
         }
-        printf("[INFO] Read %d bytes from socket %d\n", read_size, c->sockfd);
 #endif
 
         buffer[read_size] = '\0';
@@ -396,7 +392,8 @@ static void thread_handle_client(void *arg) {
 
         /* Servers MUST include a valid Date header in HTTP responses. */
         time_t now = time(NULL);
-        struct tm tm = *gmtime(&now);
+        struct tm tm;
+        gmtime_r(&now, &tm);
         char date[128];
         strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &tm);
         map_insert(res.headers, "Date", strdup(date));
