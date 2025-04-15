@@ -32,6 +32,8 @@ struct route route_find(char *route, char *method);
 struct ws_route ws_route_find(char *route);
 int route_gateway_json(struct http_response* res);
 
+void* resolv(const char* module, const char* symbol);
+
 /* TODO: Move... */
 int mgnt_parse_request(struct http_request *req, struct http_response *res);
 void safe_execute_handler(handler_t handler, struct http_request *req, struct http_response *res);

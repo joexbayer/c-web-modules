@@ -10,7 +10,7 @@ BUILD_DIR = build
 BIN_DIR = bin
 
 LDFLAGS = -lssl -lcrypto -lsqlite3 -ljansson
-CFLAGS = -O2 -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -g 
+CFLAGS = -O2 -Wall -Werror -Wextra -I$(SRC_DIR) -I./include -pthread -g  
 ifeq ($(shell uname), Darwin)
 HOMEBREW_PREFIX := $(shell brew --prefix openssl@3)
 JANSSON_PREFIX := $(shell brew --prefix jansson)
@@ -24,10 +24,12 @@ JANSSON_PREFIX := $(shell brew --prefix jansson)
 	CFLAGS += -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/opt/jansson/include -fsanitize=thread,undefined
 	LDFLAGS += -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/opt/jansson/lib
 endif
-
 # Export dynamic symbols on Linux
 ifeq ($(shell uname), Linux)
 	CFLAGS += -Wl,--export-dynamic -fsanitize=thread,undefined,bounds
+endif
+ifdef PRODUCTION
+CFLAGS += -DPRODUCTION
 endif
 
 SRCS = $(wildcard $(SRC_DIR)/*.c) 

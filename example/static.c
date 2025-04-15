@@ -13,6 +13,7 @@ static int read_file(const char *path, char *body, int size) {
     if (fp == NULL) {
         return -1;
     }
+    
     int ret = fread(body, 1, size, fp);
     if (ret < 0) {
         fclose(fp);

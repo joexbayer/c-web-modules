@@ -33,6 +33,33 @@ struct gateway {
 static int route_save_to_disk(char* filename);
 static int route_load_from_disk(char* filename);
 
+static struct gateway_entry* find_gateway_entry(const char* module) {
+    for (int i = 0; i < gateway.count; i++) {
+        if (strcmp(gateway.entries[i].module->name, module) == 0) {
+            return &gateway.entries[i];
+        }
+    }
+    return NULL;
+}
+
+/* Resolve symbol from shared object */
+void* resolv(const char* module, const char* symbol) {
+    /* Find module */
+    struct gateway_entry* entry = find_gateway_entry(module);
+    if (!entry) {
+        return NULL;
+    }
+
+    /* Find symbol */
+    void* sym = dlsym(entry->handle, symbol);
+    if (!sym) {
+        fprintf(stderr, "Error resolving symbol: %s\n", dlerror());
+        return NULL;
+    }
+
+    return sym;
+}
+
 int route_gateway_json(struct http_response* res){
     json_t *root = json_object();
     json_t *modules = json_array();
@@ -89,13 +116,13 @@ struct route route_find(char *route, char *method) {
                 continue;
             }
 
+            /* Check if method and path matches */
             if (strcmp(method, entry->method) == 0) {
                 regex_t regex;
                 char anchored_pattern[1024];
 
                 /* Create an anchored regex pattern, else partial paths will be matched... */
                 snprintf(anchored_pattern, sizeof(anchored_pattern), "^%s$", entry->path);
-
                 if (regcomp(&regex, anchored_pattern, REG_EXTENDED | REG_NOSUB) != 0) {
                     fprintf(stderr, "Invalid regex pattern: %s\n", anchored_pattern);
                     continue;
@@ -103,10 +130,9 @@ struct route route_find(char *route, char *method) {
 
                 int match = regexec(&regex, route, 0, NULL, 0);
                 regfree(&regex);
-
                 if (match == 0) {
                     pthread_rwlock_unlock(&gateway.rwlock);
-                    /* Caller is responsible for unlocking the read lock! */
+                    /* Caller is responsible for unlocking the route read lock! */
                     return (struct route){
                         .route = entry,
                         .rwlock = &gateway.entries[i].rwlock

@@ -15,6 +15,11 @@ WORKDIR /app
 COPY . /app
 EXPOSE 8080
 
-RUN make
+# Define a build argument for production
+ARG PRODUCTION=0
+
+# Run make with the appropriate flags based on the PRODUCTION argument
+RUN if [ "$PRODUCTION" -eq 1 ]; then make clean && make PRODUCTION=1; else make clean && make; fi
+
 
 CMD ["./bin/cweb"]

@@ -25,7 +25,7 @@ struct thread_pool {
     atomic_int num_threads;
     int max_threads;
     int queue_length;
-    volatile int stop;
+    volatile atomic_int stop;
     atomic_int active_threads; /* Number of threads actively processing */
 };
 
