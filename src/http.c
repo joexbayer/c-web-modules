@@ -113,13 +113,14 @@ static void http_parse_headers(const char *headers, struct http_request *req) {
                 value++;
             }
 
-            char* k_value = http_strdup(key);
+            char* k_value = http_strdup(value);
             if(!k_value) {
                 printf("[ERROR] Failed to allocate memory for header key");
                 free(line);
                 return;
             }
 
+            
             map_insert(req->headers, key, k_value);
         }
 
@@ -250,9 +251,10 @@ static void http_parse_request(const char *request, struct http_request *req) {
         return;
     }
     *version_end = '\0';
-    if (strncmp(cursor, HTTP_VERSION, strlen(HTTP_VERSION)) != 0) {
-        printf("[ERROR] Invalid HTTP version %s. %s supported.\n", cursor, HTTP_VERSION);
-        req->method = -1;
+    if (strncmp(cursor, HTTP_VERSION, strlen(HTTP_VERSION)) != 0) {   
+        req->version = HTTP_VERSION_1_0;
+    } else {
+        req->version = HTTP_VERSION_1_1;
     }
 
     /* Move cursor to headers */

@@ -266,6 +266,7 @@ static void thread_clean_up_request(struct http_request *req) {
             free(req->params->entries[i].value);
         }
         map_destroy(req->params);
+        req->params = NULL;
     }
 
     if(req->headers != NULL){
@@ -273,13 +274,18 @@ static void thread_clean_up_request(struct http_request *req) {
             free(req->headers->entries[i].value);
         }
         map_destroy(req->headers);
+        req->headers = NULL;
     }
 
     if(req->data != NULL){
         for (size_t i = 0; i < map_size(req->data); i++) {
-            free(req->data->entries[i].value);
+            // Only free if value is not NULL and was dynamically allocated
+            if (req->data->entries[i].value != NULL) {
+                free(req->data->entries[i].value);
+            }
         }
         map_destroy(req->data);
+        req->data = NULL;
     }
 }
 
@@ -319,13 +325,13 @@ static void thread_handle_client(void *arg) {
             if (SSL_get_error(c->ssl, read_size) == SSL_ERROR_ZERO_RETURN) {
                 break; // Client closed the connection
             }
-            perror("[ERROR] SSL read failed");
+            //perror("[ERROR] SSL read failed");
             break;
         }
 #else
         int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
-            perror("[ERROR] Read failed");
+            //perror("[ERROR] Read failed");
             break;
         }
 #endif
@@ -437,7 +443,7 @@ static void thread_handle_client(void *arg) {
         /**
          * HTTP/1.1 connections MUST be persistent by default unless a Connection: close header is explicitly included.
          */
-        if (close_connection) {
+        if (close_connection || req.version == HTTP_VERSION_1_0) {
             goto thread_handle_client_exit;
         }
     }
@@ -547,7 +553,8 @@ int main(int argc, char *argv[]) {
             perror("Error accepting client");
             continue;
         }
-        printf("[SERVER] Accepted connection from %s:%d\n", inet_ntoa(client->address.sin_addr), ntohs(client->address.sin_port));
+        if(!config.silent_mode)
+            printf("[SERVER] Accepted connection from %s:%d\n", inet_ntoa(client->address.sin_addr), ntohs(client->address.sin_port));
 
         /* Add client handling task to the thread pool */
         thread_pool_add_task(pool, thread_handle_client, client);

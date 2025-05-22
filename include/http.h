@@ -10,6 +10,11 @@
 #define HTTP_VERSION "HTTP/1.1"
 #define HTTP_RESPONSE_SIZE 8*1024 /* 8KB */
 
+typedef enum http_version {
+    HTTP_VERSION_1_0,
+    HTTP_VERSION_1_1,
+} http_version_t;
+
 typedef enum http_method {
     HTTP_ERR = -1,
     HTTP_GET,
@@ -36,6 +41,7 @@ extern const char *http_errors[];
 
 struct http_request {
     http_method_t method;
+    http_version_t version;
     http_error_t status;
     char *path;
     char *body;

@@ -6,7 +6,6 @@
 #include <container.h>
 #include <scheduler.h>
 #include <db.h>
-#include <defer.h>
 
 /* Third party json parser */
 #include <jansson.h>
