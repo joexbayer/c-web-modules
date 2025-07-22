@@ -5,8 +5,52 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/* Hypertext Transfer Protocol -- HTTP/1.1 Spec:  https://datatracker.ietf.org/doc/html/rfc2616 */
+static char* http_strstr(const char *str, const char *substr) {
+    const char *p = str;
+    while (*p != '\0') {
+        const char *p1 = p;
+        const char *p2 = substr;
+        while (*p1 != '\0' && *p2 != '\0' && *p1 == *p2) {
+            p1++;
+            p2++;
+        }
+        if (*p2 == '\0') {
+            return (char *)p;
+        }
+        p++;
+    }
+    return NULL;
+}
 
+static char* http_strchr(const char *str, char c) {
+    const char *begin = str;
+    while (*str != '\0' && (str - begin) < 1024) {
+        if (*str == c) {
+            return (char *)str;
+        }
+        str++;
+    }
+    return NULL;
+}
+
+static char* http_strdup(const char *str) {
+    if (!str) {
+        return NULL;
+    }
+    
+    int len = strlen(str);
+    char *dup = malloc(len + 1);
+    
+    if (!dup) {
+        printf("[ERROR] Failed to allocate memory for string duplication");
+        return NULL;
+    }
+    
+    strcpy(dup, str);
+    return dup;
+}
+
+/* Hypertext Transfer Protocol -- HTTP/1.1 Spec:  https://datatracker.ietf.org/doc/html/rfc2616 */
 const char *http_methods[] = {"GET", "POST", "PUT", "DELETE"};
 const char *http_errors[] = {
     "400 Bad Request", /* Unknown defaults to 400 */
@@ -45,7 +89,7 @@ static void http_parse_headers(const char *headers, struct http_request *req) {
     const char *line_start = headers;
 
     while (*line_start != '\0') {
-        const char *line_end = strstr(line_start, "\r\n");
+        const char *line_end = http_strstr(line_start, "\r\n");
         if (!line_end) {
             line_end = line_start + strlen(line_start);
         }
@@ -54,13 +98,13 @@ static void http_parse_headers(const char *headers, struct http_request *req) {
         size_t line_length = line_end - line_start;
         char *line = malloc(line_length + 1);
         if (!line) {
-            perror("Failed to allocate memory for header line");
+            printf("[ERROR] Failed to allocate memory for header line");
             return;
         }
         strncpy(line, line_start, line_length);
         line[line_length] = '\0';
 
-        char *colon = strchr(line, ':');
+        char *colon = http_strchr(line, ':');
         if (colon) {
             *colon = '\0';
             char *key = line;
@@ -69,7 +113,15 @@ static void http_parse_headers(const char *headers, struct http_request *req) {
                 value++;
             }
 
-            map_insert(req->headers, key, strdup(value));
+            char* k_value = http_strdup(value);
+            if(!k_value) {
+                printf("[ERROR] Failed to allocate memory for header key");
+                free(line);
+                return;
+            }
+
+            
+            map_insert(req->headers, key, k_value);
         }
 
         free(line);
@@ -81,14 +133,13 @@ static void http_parse_headers(const char *headers, struct http_request *req) {
     }
 }
 
-
 /* Parses query parameters and puts them into params map */
 static void http_parse_params(const char *query, struct http_request *req) {
     const char *param_start = query;
 
     while (*param_start != '\0') {
-        const char *param_end = strchr(param_start, '&');
-        const char *key_end = strchr(param_start, '=');
+        const char *param_end = http_strchr(param_start, '&');
+        const char *key_end = http_strchr(param_start, '=');
 
         if (key_end && (!param_end || key_end < param_end)) {
             size_t key_length = key_end - param_start;
@@ -97,7 +148,7 @@ static void http_parse_params(const char *query, struct http_request *req) {
             char *key = malloc(key_length + 1);
             char *value = malloc(value_length + 1);
             if (!key || !value) {
-                perror("Failed to allocate memory for query parameters");
+                printf("[ERROR] Failed to allocate memory for query parameters");
                 free(key);
                 free(value);
                 return;
@@ -109,10 +160,10 @@ static void http_parse_params(const char *query, struct http_request *req) {
             strncpy(value, key_end + 1, value_length);
             value[value_length] = '\0';
 
+            /* Malloced value is handed of too map. */
             map_insert(req->params, key, value);
             
             free(key);
-
             param_start = param_end ? param_end + 1 : "";
         } else {
             break;
@@ -124,12 +175,12 @@ static void http_parse_params(const char *query, struct http_request *req) {
 
 /* Allocates and copies request body */
 static void http_parse_body(const char *request, struct http_request *req) {
-    char *body = strstr(request, "\r\n\r\n");
+    char *body = http_strstr(request, "\r\n\r\n");
     if (body) {
         body += 4; /* Skip past the "\r\n\r\n" */
-        req->body = strdup(body);
+        req->body = http_strdup(body);
         if (!req->body) {
-            perror("Failed to allocate body");
+            printf("[ERROR] Failed to allocate body");
         }
     } else {
         req->body = NULL;
@@ -138,18 +189,18 @@ static void http_parse_body(const char *request, struct http_request *req) {
 
 /* Mainly parses the header of the HTTP request */
 static void http_parse_request(const char *request, struct http_request *req) {
-    char *request_copy = strdup(request);
+    char *request_copy = http_strdup(request);
     if (!request_copy) {
-        perror("Failed to allocate request copy");
+        printf("[ERROR] Failed to allocate request copy");
         return;
     }
 
     char *cursor = request_copy;
 
     /* Parse method */
-    char *method_end = strchr(cursor, ' ');
+    char *method_end = http_strchr(cursor, ' ');
     if (!method_end) {
-        perror("Failed to parse method");
+        printf("[ERROR] Failed to parse method");
         free(request_copy);
         req->method = -1;
         return;
@@ -164,9 +215,9 @@ static void http_parse_request(const char *request, struct http_request *req) {
     * implementations might not properly support these lengths.
     */
     cursor = method_end + 1;
-    char *path_end = strchr(cursor, ' ');
+    char *path_end = http_strchr(cursor, ' ');
     if (!path_end) {
-        perror("Failed to parse path");
+        printf("[ERROR] Failed to parse path");
         free(request_copy);
         req->method = -1;
         return;
@@ -183,26 +234,27 @@ static void http_parse_request(const char *request, struct http_request *req) {
         req->method = -1;
         return;
     }
-    req->path = strdup(cursor);
+    req->path = http_strdup(cursor);
     if (!req->path) {
-        perror("Failed to allocate memory for path");
+        printf("[ERROR] Failed to allocate memory for path");
         free(request_copy);
         return;
     }
 
     /* Parse HTTP version */
     cursor = path_end + 1;
-    char *version_end = strstr(cursor, "\r\n");
+    char *version_end = http_strstr(cursor, "\r\n");
     if (!version_end) {
-        perror("Failed to parse HTTP version");
+        printf("[ERROR] Failed to parse HTTP version");
         free(request_copy);
         req->method = -1;
         return;
     }
     *version_end = '\0';
-    if (strncmp(cursor, HTTP_VERSION, strlen(HTTP_VERSION)) != 0) {
-        printf("[ERROR] Invalid HTTP version %s. %s supported.\n", cursor, HTTP_VERSION);
-        req->method = -1;
+    if (strncmp(cursor, HTTP_VERSION, strlen(HTTP_VERSION)) != 0) {   
+        req->version = HTTP_VERSION_1_0;
+    } else {
+        req->version = HTTP_VERSION_1_1;
     }
 
     /* Move cursor to headers */
@@ -212,21 +264,23 @@ static void http_parse_request(const char *request, struct http_request *req) {
     req->headers = map_create(32);
     req->params = map_create(10);
     if (!req->headers || !req->params) {
-        perror("Failed to create map");
+        printf("[ERROR] Failed to create map");
         free(request_copy);
         return;
     }
 
     /* Parse headers */
-    char *headers_end = strstr(cursor, "\r\n\r\n");
+    char *headers_end = http_strstr(cursor, "\r\n\r\n");
     if (headers_end) {
         size_t headers_length = headers_end - cursor;
+        
         char *headers = malloc(headers_length + 1);
         if (!headers) {
-            perror("Failed to allocate memory for headers");
+            printf("[ERROR] Failed to allocate memory for headers");
             free(request_copy);
             return;
         }
+
         strncpy(headers, cursor, headers_length);
         headers[headers_length] = '\0';
         http_parse_headers(headers, req);
@@ -236,7 +290,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
     }
 
     /* Parse query params */
-    char *query = strchr(req->path, '?');
+    char *query = http_strchr(req->path, '?');
     if (query) {
         *query = '\0';
         query++;
@@ -276,7 +330,7 @@ static int http_parse_content_type(const struct http_request *req, char **bounda
 
 
     const char *boundary_prefix = "boundary=";
-    *boundary = strstr(content_type, boundary_prefix);
+    *boundary = http_strstr(content_type, boundary_prefix);
     if (*boundary == NULL) {
         fprintf(stderr, "[ERROR] Boundary not found in Content-Type header\n");
         return -1;
@@ -291,6 +345,15 @@ static int http_parse_content_type(const struct http_request *req, char **bounda
     return 0;
 }
 
+static void http_extract_field(const char *src, char *dst, int max_len) {
+    int i = 0;
+    while (i < max_len - 1 && src[i] != '\0' && src[i] != '"') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';  // Null-terminate
+}
+
 /**
  * Extract form data from body
  * Multiple form fields are separated by boundary
@@ -299,13 +362,13 @@ static int http_parse_content_type(const struct http_request *req, char **bounda
  * @param form_data Map to store form data   
  */
 static int http_extract_multipart_form_data(const char *body, const char *boundary, struct map *form_data) {
-    char *boundary_start = strstr(body, boundary);
+    char *boundary_start = http_strstr(body, boundary);
     if (boundary_start == NULL) {
         fprintf(stderr, "[ERROR] Boundary not found in body\n");
         return -1;
     }
 
-    char *boundary_end = strstr(boundary_start, boundary);
+    char *boundary_end = http_strstr(boundary_start, boundary);
     if (boundary_end == NULL) {
         fprintf(stderr, "[ERROR] Boundary end not found in body\n");
         return -1;
@@ -316,26 +379,26 @@ static int http_extract_multipart_form_data(const char *body, const char *bounda
         if (strncmp(boundary_start, "--", 2) == 0) break;
 
         /* Find Content-Disposition */
-        char *content_disposition = strstr(boundary_start, "Content-Disposition: form-data; name=\"");
+        char *content_disposition = http_strstr(boundary_start, "Content-Disposition: form-data; name=\"");
         if (content_disposition == NULL) break;
 
         /* Extract field name */
         content_disposition += strlen("Content-Disposition: form-data; name=\"");
         char field_name[50];
-        sscanf(content_disposition, "%49[^\"]", field_name);
+        http_extract_field(content_disposition, field_name, sizeof(field_name));
 
         /* Extract value */
-        char *value_start = strstr(content_disposition, "\r\n\r\n");
+        char *value_start = http_strstr(content_disposition, "\r\n\r\n");
         if (value_start == NULL) break;
         value_start += 4;
 
-        char *value_end = strstr(value_start, boundary);
+        char *value_end = http_strstr(value_start, boundary);
         if (value_end == NULL) break;
         value_end -= 2;
 
         char *value = (char *)malloc(value_end - value_start + 1);
         if (value == NULL) {
-            perror("Error allocating memory");
+            printf("[ERROR] Error allocating memory");
             return -1;
         }
 
@@ -346,7 +409,7 @@ static int http_extract_multipart_form_data(const char *body, const char *bounda
 
         map_insert(form_data, field_name, value);
 
-        boundary_start = strstr(value_end, boundary);
+        boundary_start = http_strstr(value_end, boundary);
     }
 
     return 0;
@@ -356,14 +419,13 @@ static int http_extract_multipart_form_data(const char *body, const char *bounda
 int http_parse_data(struct http_request *req) {
     req->data = map_create(32);
     if(!req->data) {
-        perror("Failed to create map");
+        printf("[ERROR] Failed to create map");
         return -1;
     }
 
-    char *content_type = map_get(req->headers, "Content-Type");
-
     /* Handle multipart/form-data */
-    if (content_type && strstr(content_type, "multipart/form-data")) {
+    char *content_type = map_get(req->headers, "Content-Type");
+    if (content_type && http_strstr(content_type, "multipart/form-data")) {
         char *boundary = NULL;
         if (http_parse_content_type(req, &boundary) == 0) {
             if (http_extract_multipart_form_data(req->body, boundary, req->data) != 0) {
@@ -374,13 +436,13 @@ int http_parse_data(struct http_request *req) {
     }
 
     /* Handle application/x-www-form-urlencoded */
-    if (content_type && strstr(content_type, "application/x-www-form-urlencoded")) {
+    if (content_type && http_strstr(content_type, "application/x-www-form-urlencoded")) {
         const char *param_start = req->body;
 
         while (*param_start != '\0') {
-            const char *param_end = strchr(param_start, '&');
-            const char *key_end = strchr(param_start, '=');
 
+            const char *param_end = http_strchr(param_start, '&');
+            const char *key_end = http_strchr(param_start, '=');
             if (key_end && (!param_end || key_end < param_end)) {
                 size_t key_length = key_end - param_start;
                 size_t value_length = param_end ? (size_t)(param_end - key_end - 1) : strlen(key_end + 1);
@@ -388,7 +450,7 @@ int http_parse_data(struct http_request *req) {
                 char *key = malloc(key_length + 1);
                 char *value = malloc(value_length + 1);
                 if (!key || !value) {
-                    perror("Failed to allocate memory for form data");
+                    printf("[ERROR] Failed to allocate memory for form data");
                     free(key);
                     free(value);
                     return -1;
@@ -403,6 +465,9 @@ int http_parse_data(struct http_request *req) {
                 map_insert(req->data, key, value);
 
                 param_start = param_end ? param_end + 1 : "";
+
+                /* Map mallocs its key value and copies over content. So we free our key. */
+                free(key);
             } else {
                 break;
             }
