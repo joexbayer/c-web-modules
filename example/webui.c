@@ -120,14 +120,14 @@ static int clear(struct http_request *req, struct http_response *res) {
     }
 
     res->status = HTTP_302_FOUND;
-    map_insert(res->headers, "Location", "/webui");
+    http_kv_insert(res->headers, "Location", "/webui");
     return 0;
 }
 
 static int add(struct http_request *req, struct http_response *res) {
-    const char *author = map_get(req->data, "author");
-    const char *name = map_get(req->data, "name");
-    const char *code = map_get(req->data, "code");
+    const char *author = http_kv_get(req->data, "author");
+    const char *name = http_kv_get(req->data, "name");
+    const char *code = http_kv_get(req->data, "code");
 
     printf("Adding module: %s - %s\n", author, name);
     printf("Code: %s\n", code);
@@ -154,7 +154,7 @@ static int add(struct http_request *req, struct http_response *res) {
     database->finalize(stmt);
 
     res->status = HTTP_302_FOUND;
-    map_insert(res->headers, "Location", "/webui");
+    http_kv_insert(res->headers, "Location", "/webui");
     return 0;
 }
 

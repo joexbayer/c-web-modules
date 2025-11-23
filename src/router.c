@@ -96,8 +96,8 @@ int route_gateway_json(struct http_response* res){
     char *json_str = json_dumps(root, JSON_INDENT(2));
     json_decref(root);
 
-    map_insert(res->headers, "Content-Type", "application/json");
-    map_insert(res->headers, "Access-Control-Allow-Origin", "*");
+    http_kv_insert(res->headers, "Content-Type", "application/json");
+    http_kv_insert(res->headers, "Access-Control-Allow-Origin", "*");
     res->body = json_str;
     res->content_length = strlen(json_str);
     res->status = HTTP_200_OK;

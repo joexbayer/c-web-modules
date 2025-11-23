@@ -1,5 +1,4 @@
 #include <cweb.h>
-#include <map.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <crypto.h>
@@ -78,7 +77,7 @@ static int verify_signed_cookie(const char* cookie) {
 }
 
 static int login_page(struct http_request *req, struct http_response *res) {
-    const char* redirect_url = map_get(req->params, "redirect");
+    const char* redirect_url = http_kv_get(req->params, "redirect");
     if (!redirect_url) {
         redirect_url = "/";
     }
@@ -110,7 +109,7 @@ static int secret(struct http_request *req, struct http_response *res) {
         return 0;
     }
 
-    char* cookie = map_get(req->headers, "Cookie");
+    char* cookie = http_kv_get(req->headers, "Cookie");
     if (cookie != NULL) {
         char* cweb_auth_cookie = strstr(cookie, "cweb_auth=");
         if (cweb_auth_cookie != NULL) {
@@ -124,7 +123,7 @@ static int secret(struct http_request *req, struct http_response *res) {
         res->status = HTTP_302_FOUND;
         char location[HTTP_RESPONSE_SIZE];
         snprintf(location, sizeof(location), "/login?redirect=/secret");
-        map_insert(res->headers, "Location", location);
+        http_kv_insert(res->headers, "Location", location);
         return 0;
     }
 
@@ -147,9 +146,9 @@ static int authenticate(struct http_request *req, struct http_response *res) {
         return 0;
     }
 
-    char* user = map_get(req->data, "username");
-    char* pass = map_get(req->data, "password");
-    char* redirect_url = map_get(req->data, "redirect");
+    char* user = http_kv_get(req->data, "username");
+    char* pass = http_kv_get(req->data, "password");
+    char* redirect_url = http_kv_get(req->data, "redirect");
     if (!redirect_url) {
         redirect_url = "/";
     }
@@ -171,12 +170,12 @@ static int authenticate(struct http_request *req, struct http_response *res) {
     char* cookie = create_signed_cookie(user);
     char* cookie_with_name = malloc(strlen(cookie_name) + strlen(cookie) + 1);
     sprintf(cookie_with_name, "%s%s", cookie_name, cookie);
-    map_insert(res->headers, "Set-Cookie", cookie_with_name);
+    http_kv_insert(res->headers, "Set-Cookie", cookie_with_name);
     free(cookie_with_name);
     free(cookie);
 
     res->status = HTTP_302_FOUND;
-    map_insert(res->headers, "Location", redirect_url);
+    http_kv_insert(res->headers, "Location", redirect_url);
 
     return 1;
 }
