@@ -57,8 +57,8 @@ int index_route(struct http_request *req, struct http_response *res) {
     snprintf(rendered_page, sizeof(rendered_page), home_template, head, content);
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", rendered_page);
     
-    map_insert(res->headers, "Content-Type", "text/html");
-    map_insert(res->headers, "x-custom-header", "Hello, World!");
+    http_kv_insert(res->headers, "Content-Type", "text/html");
+    http_kv_insert(res->headers, "x-custom-header", "Hello, World!");
 
     res->status = HTTP_200_OK;
     return 0;
@@ -72,13 +72,13 @@ int add_todo_route(struct http_request *req, struct http_response *res) {
         return 0;
     }
 
-    const char *new_item = map_get(req->data, "item");
+    const char *new_item = http_kv_get(req->data, "item");
     if (new_item && strlen(new_item) < 256) {
         list[list_count++] = strdup(new_item); // Add to the TODO list
     }
 
     res->status = HTTP_302_FOUND;
-    map_insert(res->headers, "Location", "/");
+    http_kv_insert(res->headers, "Location", "/");
     return 0;
 }
 

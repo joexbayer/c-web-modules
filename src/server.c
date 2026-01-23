@@ -20,7 +20,6 @@
 #include "http.h"
 #include "router.h"
 #include "cweb.h"
-#include "map.h"
 #include "db.h"
 #include "scheduler.h"
 #include "pool.h"
@@ -239,9 +238,9 @@ static int gateway(int fd, struct http_request *req, struct http_response *res) 
 
 /* Build headers for response */
 static void build_headers(struct http_response *res, char *headers, int headers_size) {
-    struct map *headers_map = res->headers;
+    struct http_kv_store *headers_map = res->headers;
     int headers_len = 0;
-    for (size_t i = 0; i < map_size(headers_map); i++) {
+    for (size_t i = 0; i < http_kv_size(headers_map); i++) {
         int written = snprintf(headers + headers_len, headers_size - headers_len, "%s: %s\r\n", headers_map->entries[i].key, (char*)headers_map->entries[i].value);
         if (written < 0 || written >= headers_size - headers_len) {
             fprintf(stderr, "[ERROR] Header buffer overflow\n");
@@ -262,36 +261,24 @@ static void thread_clean_up_request(struct http_request *req) {
     if (req->path) free(req->path);
 
     if(req->params != NULL){
-        for (size_t i = 0; i < map_size(req->params); i++) {
-            free(req->params->entries[i].value);
-        }
-        map_destroy(req->params);
+        http_kv_destroy(req->params, 1);
         req->params = NULL;
     }
 
     if(req->headers != NULL){
-        for (size_t i = 0; i < map_size(req->headers); i++) {
-            free(req->headers->entries[i].value);
-        }
-        map_destroy(req->headers);
+        http_kv_destroy(req->headers, 1);
         req->headers = NULL;
     }
 
     if(req->data != NULL){
-        for (size_t i = 0; i < map_size(req->data); i++) {
-            // Only free if value is not NULL and was dynamically allocated
-            if (req->data->entries[i].value != NULL) {
-                free(req->data->entries[i].value);
-            }
-        }
-        map_destroy(req->data);
+        http_kv_destroy(req->data, 1);
         req->data = NULL;
     }
 }
 
 static void thread_clean_up(struct http_request *req, struct http_response *res) {
     thread_clean_up_request(req);
-    map_destroy(res->headers);
+    http_kv_destroy(res->headers, 0);
     free(res->body);
 }
 
@@ -376,7 +363,7 @@ static void thread_handle_client(void *arg) {
         close_connection = req.close;
 
         struct http_response res;
-        res.headers = map_create(32);
+        res.headers = http_kv_create(32);
         if (res.headers == NULL) {
             perror("[ERROR] Error creating map");
             goto thread_handle_client_exit;
@@ -392,7 +379,7 @@ static void thread_handle_client(void *arg) {
 
         /* If all threads are in use, send close */
         if(thread_pool_is_full(pool)) {
-            map_insert(res.headers, "Connection", "close");
+            http_kv_insert(res.headers, "Connection", "close");
             close_connection = 1;
         }
 
@@ -402,7 +389,7 @@ static void thread_handle_client(void *arg) {
         gmtime_r(&now, &tm);
         char date[128];
         strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &tm);
-        map_insert(res.headers, "Date", strdup(date));
+        http_kv_insert(res.headers, "Date", strdup(date));
 
         char headers[4*1024] = {0};
         char response[8*1024] = {0};
@@ -428,9 +415,9 @@ static void thread_handle_client(void *arg) {
             printf("[%ld] %s - Request %s %s took %f seconds.\n", (long)req.tid, http_errors[res.status], http_methods[req.method], req.path, time_taken);
 
         /* Ugly hacks */
-        char* ac = map_get(res.headers, "Sec-WebSocket-Accept");
+        char* ac = http_kv_get(res.headers, "Sec-WebSocket-Accept");
         if (ac) free(ac);
-        char* dt = map_get(res.headers, "Date");
+        char* dt = http_kv_get(res.headers, "Date");
         if (dt) free(dt);
 
         thread_clean_up(&req, &res);

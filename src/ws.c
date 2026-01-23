@@ -7,7 +7,6 @@
 #include <arpa/inet.h>
 
 #include <http.h>
-#include <map.h>
 #include <list.h>
 #include <cweb.h>
 #include <libevent.h>
@@ -398,8 +397,8 @@ static void* ws_event_thread(void* args) {
 }
 
 int http_is_websocket_upgrade(struct http_request *req) {
-    const char *connection = map_get(req->headers, "Connection");
-    const char *upgrade = map_get(req->headers, "Upgrade");
+    const char *connection = http_kv_get(req->headers, "Connection");
+    const char *upgrade = http_kv_get(req->headers, "Upgrade");
     
     if (connection && upgrade && strstr(connection, "Upgrade") && strcmp(upgrade, "websocket") == 0) {
         return 1;
@@ -422,7 +421,7 @@ int ws_confirm_open(int sd){
 void ws_handle_client(int sd, struct http_request *req, struct http_response *res, struct ws_info *info) {
     printf("[WS] Upgrading connection to WebSocket %d\n", sd);
 
-    const char *client_key = map_get(req->headers, "Sec-WebSocket-Key");
+    const char *client_key = http_kv_get(req->headers, "Sec-WebSocket-Key");
     if (!client_key) {
         fprintf(stderr, "[ERROR] Missing Sec-WebSocket-Key header\n");
         res->status = HTTP_400_BAD_REQUEST;
@@ -454,9 +453,9 @@ void ws_handle_client(int sd, struct http_request *req, struct http_response *re
 
     req->websocket = 1;
     res->status = HTTP_101_SWITCHING_PROTOCOLS;
-    map_insert(res->headers, "Sec-WebSocket-Accept", accept_key);
-    map_insert(res->headers, "Upgrade", "websocket");
-    map_insert(res->headers, "Connection", "Upgrade");
+    http_kv_insert(res->headers, "Sec-WebSocket-Accept", accept_key);
+    http_kv_insert(res->headers, "Upgrade", "websocket");
+    http_kv_insert(res->headers, "Connection", "Upgrade");
     res->body[0] = '\0';
 }
 

@@ -93,7 +93,7 @@ int chat_page(struct http_request *req, struct http_response *res) {
         "</html>";
 
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", html);
-    map_insert(res->headers, "Content-Type", "text/html");
+    http_kv_insert(res->headers, "Content-Type", "text/html");
     res->status = HTTP_200_OK;
     return 0;
 }

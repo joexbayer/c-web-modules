@@ -6,6 +6,24 @@
 #include <string.h>
 #include <pthread.h>
 #include <ctype.h>
+#include <stddef.h>
+
+struct http_kv_pair {
+    char *key;
+    char *value;
+};
+
+struct http_kv_store {
+    struct http_kv_pair *entries;
+    size_t size;
+    size_t capacity;
+};
+
+struct http_kv_store *http_kv_create(size_t initial_capacity);
+void http_kv_destroy(struct http_kv_store *store, int free_values);
+int http_kv_insert(struct http_kv_store *store, const char *key, char *value);
+char *http_kv_get(const struct http_kv_store *store, const char *key);
+size_t http_kv_size(const struct http_kv_store *store);
 
 #define HTTP_VERSION "HTTP/1.1"
 #define HTTP_RESPONSE_SIZE 8*1024 /* 8KB */
@@ -49,16 +67,16 @@ struct http_request {
     char keep_alive;
     char close;
     pthread_t tid;
-    struct map *params;
-    struct map *headers;
-    struct map *data;
+    struct http_kv_store *params;
+    struct http_kv_store *headers;
+    struct http_kv_store *data;
 
     int websocket;
 };
 
 struct http_response {
     http_error_t status;
-    struct map *headers;
+    struct http_kv_store *headers;
     char *body;
     int content_length;
 };

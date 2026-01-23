@@ -28,16 +28,16 @@ static void set_content_type(struct http_response *res, const char *path) {
     char *ext = strrchr(path, '.');
     if (ext) {
         if (strcmp(ext, ".html") == 0) {
-            map_insert(res->headers, "Content-Type", "text/html");
+            http_kv_insert(res->headers, "Content-Type", "text/html");
         } else if (strcmp(ext, ".css") == 0) {
-            map_insert(res->headers, "Content-Type", "text/css");
+            http_kv_insert(res->headers, "Content-Type", "text/css");
         } else if (strcmp(ext, ".js") == 0) {
-            map_insert(res->headers, "Content-Type", "application/javascript");
+            http_kv_insert(res->headers, "Content-Type", "application/javascript");
         } else {
-            map_insert(res->headers, "Content-Type", "text/plain");
+            http_kv_insert(res->headers, "Content-Type", "text/plain");
         }
     } else {
-        map_insert(res->headers, "Content-Type", "text/plain");
+        http_kv_insert(res->headers, "Content-Type", "text/plain");
     }
 }
 

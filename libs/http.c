@@ -1,9 +1,8 @@
-
 #include "http.h"
-#include "map.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <ctype.h>
 
 static char* http_strstr(const char *str, const char *substr) {
     const char *p = str;
@@ -33,6 +32,19 @@ static char* http_strchr(const char *str, char c) {
     return NULL;
 }
 
+static int http_strcasecmp(const char *a, const char *b) {
+    while (*a && *b) {
+        int ca = tolower((unsigned char)*a);
+        int cb = tolower((unsigned char)*b);
+        if (ca != cb) {
+            return ca - cb;
+        }
+        a++;
+        b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
 static char* http_strdup(const char *str) {
     if (!str) {
         return NULL;
@@ -48,6 +60,86 @@ static char* http_strdup(const char *str) {
     
     strcpy(dup, str);
     return dup;
+}
+
+struct http_kv_store *http_kv_create(size_t initial_capacity) {
+    if (initial_capacity == 0) {
+        return NULL;
+    }
+
+    struct http_kv_store *store = malloc(sizeof(struct http_kv_store));
+    if (!store) {
+        return NULL;
+    }
+
+    store->entries = calloc(initial_capacity, sizeof(struct http_kv_pair));
+    if (!store->entries) {
+        free(store);
+        return NULL;
+    }
+
+    store->size = 0;
+    store->capacity = initial_capacity;
+    return store;
+}
+
+void http_kv_destroy(struct http_kv_store *store, int free_values) {
+    if (!store) {
+        return;
+    }
+
+    for (size_t i = 0; i < store->size; ++i) {
+        free(store->entries[i].key);
+        if (free_values && store->entries[i].value) {
+            free(store->entries[i].value);
+        }
+    }
+
+    free(store->entries);
+    free(store);
+}
+
+int http_kv_insert(struct http_kv_store *store, const char *key, char *value) {
+    if (!store || !key) {
+        return -1;
+    }
+
+    if (store->size >= store->capacity) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < store->size; ++i) {
+        if (strcmp(store->entries[i].key, key) == 0) {
+            return 0;
+        }
+    }
+
+    char *dup_key = http_strdup(key);
+    if (!dup_key) {
+        return -1;
+    }
+
+    store->entries[store->size].key = dup_key;
+    store->entries[store->size].value = value;
+    store->size++;
+    return 0;
+}
+
+char *http_kv_get(const struct http_kv_store *store, const char *key) {
+    if (!store || !key) {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < store->size; ++i) {
+        if (strcmp(store->entries[i].key, key) == 0) {
+            return store->entries[i].value;
+        }
+    }
+    return NULL;
+}
+
+size_t http_kv_size(const struct http_kv_store *store) {
+    return store ? store->size : 0;
 }
 
 /* Hypertext Transfer Protocol -- HTTP/1.1 Spec:  https://datatracker.ietf.org/doc/html/rfc2616 */
@@ -120,8 +212,7 @@ static void http_parse_headers(const char *headers, struct http_request *req) {
                 return;
             }
 
-            
-            map_insert(req->headers, key, k_value);
+            http_kv_insert(req->headers, key, k_value);
         }
 
         free(line);
@@ -160,8 +251,7 @@ static void http_parse_params(const char *query, struct http_request *req) {
             strncpy(value, key_end + 1, value_length);
             value[value_length] = '\0';
 
-            /* Malloced value is handed of too map. */
-            map_insert(req->params, key, value);
+            http_kv_insert(req->params, key, value);
             
             free(key);
             param_start = param_end ? param_end + 1 : "";
@@ -261,8 +351,8 @@ static void http_parse_request(const char *request, struct http_request *req) {
     cursor = version_end + 2;
 
     /* Create maps for headers and params */
-    req->headers = map_create(32);
-    req->params = map_create(10);
+    req->headers = http_kv_create(32);
+    req->params = http_kv_create(10);
     if (!req->headers || !req->params) {
         printf("[ERROR] Failed to create map");
         free(request_copy);
@@ -301,7 +391,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
     http_parse_body(cursor, req);
 
     /* Parse Content-Length */
-    char *content_length_str = map_get(req->headers, "Content-Length");
+    char *content_length_str = http_kv_get(req->headers, "Content-Length");
     if (content_length_str) {
         req->content_length = atoi(content_length_str);
     } else {
@@ -309,10 +399,10 @@ static void http_parse_request(const char *request, struct http_request *req) {
     }
 
     /* Parse Connection */
-    const char *connection = map_get(req->headers, "Connection");
-    if (connection && strcasecmp(connection, "keep-alive") == 0) {
+    const char *connection = http_kv_get(req->headers, "Connection");
+    if (connection && http_strcasecmp(connection, "keep-alive") == 0) {
         req->keep_alive = 1;
-    } else if (connection && strcasecmp(connection, "close") == 0) {
+    } else if (connection && http_strcasecmp(connection, "close") == 0) {
         req->close = 1;
     }
 
@@ -322,7 +412,7 @@ static void http_parse_request(const char *request, struct http_request *req) {
 
 /* Tries to get boundary if multipart data is present. */
 static int http_parse_content_type(const struct http_request *req, char **boundary) {
-    const char *content_type = map_get(req->headers, "Content-Type");
+    const char *content_type = http_kv_get(req->headers, "Content-Type");
     if (content_type == NULL) {
         fprintf(stderr, "[ERROR] Content-Type header not found\n");
         return -1;
@@ -361,7 +451,7 @@ static void http_extract_field(const char *src, char *dst, int max_len) {
  * @param boundary Boundary string
  * @param form_data Map to store form data   
  */
-static int http_extract_multipart_form_data(const char *body, const char *boundary, struct map *form_data) {
+static int http_extract_multipart_form_data(const char *body, const char *boundary, struct http_kv_store *form_data) {
     char *boundary_start = http_strstr(body, boundary);
     if (boundary_start == NULL) {
         fprintf(stderr, "[ERROR] Boundary not found in body\n");
@@ -407,7 +497,7 @@ static int http_extract_multipart_form_data(const char *body, const char *bounda
 
         trim_trailing_whitespace(value);
 
-        map_insert(form_data, field_name, value);
+        http_kv_insert(form_data, field_name, value);
 
         boundary_start = http_strstr(value_end, boundary);
     }
@@ -417,14 +507,14 @@ static int http_extract_multipart_form_data(const char *body, const char *bounda
 
 /* Parses body data if its either multipart of x-www-form */
 int http_parse_data(struct http_request *req) {
-    req->data = map_create(32);
+    req->data = http_kv_create(32);
     if(!req->data) {
         printf("[ERROR] Failed to create map");
         return -1;
     }
 
     /* Handle multipart/form-data */
-    char *content_type = map_get(req->headers, "Content-Type");
+    char *content_type = http_kv_get(req->headers, "Content-Type");
     if (content_type && http_strstr(content_type, "multipart/form-data")) {
         char *boundary = NULL;
         if (http_parse_content_type(req, &boundary) == 0) {
@@ -462,7 +552,7 @@ int http_parse_data(struct http_request *req) {
                 strncpy(value, key_end + 1, value_length);
                 value[value_length] = '\0';
 
-                map_insert(req->data, key, value);
+                http_kv_insert(req->data, key, value);
 
                 param_start = param_end ? param_end + 1 : "";
 
@@ -486,7 +576,7 @@ int http_parse(const char *request, struct http_request *req) {
     /**
      * Requests MUST include the Host header field, and the server MUST reject requests without it (400 Bad Request).
      */
-    char* host = map_get(req->headers, "Host");
+    char* host = http_kv_get(req->headers, "Host");
     if (!host) {
         fprintf(stderr, "[ERROR] Host header not found\n");
         req->method = -1;

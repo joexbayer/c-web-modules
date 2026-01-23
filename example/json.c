@@ -40,7 +40,7 @@ int get_list_route(struct http_request *req, struct http_response *res) {
 
     /* HTTP response */
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", json_response);
-    map_insert(res->headers, "Content-Type", "application/json");
+    http_kv_insert(res->headers, "Content-Type", "application/json");
     res->status = HTTP_200_OK;
     return 0;
 }
@@ -52,7 +52,7 @@ int add_item_route(struct http_request *req, struct http_response *res) {
         
         char *error_json = json_dumps(error, JSON_COMPACT);
         snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", error_json);
-        map_insert(res->headers, "Content-Type", "application/json");
+        http_kv_insert(res->headers, "Content-Type", "application/json");
         
         free(error_json);
         json_decref(error);
@@ -60,7 +60,7 @@ int add_item_route(struct http_request *req, struct http_response *res) {
         return 0;
     }
 
-    const char *new_item = map_get(req->data, "item");
+    const char *new_item = http_kv_get(req->data, "item");
     if (new_item && strlen(new_item) < 256) {
         list[list_count++] = strdup(new_item); /* uses malloc */
     }
@@ -68,7 +68,7 @@ int add_item_route(struct http_request *req, struct http_response *res) {
     json_t *message = json_pack("{s:s}", "message", "Item added");
     char *message_json = json_dumps(message, JSON_COMPACT);
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", message_json);
-    map_insert(res->headers, "Content-Type", "application/json");
+    http_kv_insert(res->headers, "Content-Type", "application/json");
     
     free(message_json);
     json_decref(message);

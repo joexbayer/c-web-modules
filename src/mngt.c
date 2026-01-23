@@ -1,7 +1,6 @@
 #include "http.h"
 #include "router.h"
 #include "cweb.h"
-#include "map.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,5 +155,5 @@ int mgnt_parse_request(struct http_request *req, struct http_response *res) {
         return -1;
     }
 
-    return mgnt_register_module(res, map_get(req->data, "code"));;
+    return mgnt_register_module(res, http_kv_get(req->data, "code"));
 }

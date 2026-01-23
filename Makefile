@@ -26,7 +26,11 @@ JANSSON_PREFIX := $(shell brew --prefix jansson)
 endif
 # Export dynamic symbols on Linux
 ifeq ($(shell uname), Linux)
+ifndef NO_SANITIZE
 	CFLAGS += -Wl,--export-dynamic -fsanitize=thread,undefined,bounds
+else
+	CFLAGS += -Wl,--export-dynamic
+endif
 endif
 ifdef PRODUCTION
 CFLAGS += -DPRODUCTION
@@ -42,10 +46,13 @@ LIB_DIR = libs
 LIB_SRCS = libs/module.c src/map.c
 LIB_OBJS = $(patsubst $(LIB_DIR)/%.c, $(BUILD_DIR)/%.o, $(LIB_SRCS))
 LIB_TARGET = $(LIB_DIR)/libmodule.so
+HTTP_LIB_SRCS = libs/http.c
+HTTP_LIB_OBJS = $(patsubst $(LIB_DIR)/%.c, $(BUILD_DIR)/%.o, $(HTTP_LIB_SRCS))
+HTTP_LIB_TARGET = $(LIB_DIR)/libhttp.so
 
-all: $(LIB_TARGET) $(TARGET)
+all: $(LIB_TARGET) $(HTTP_LIB_TARGET) $(TARGET)
 
-$(TARGET): $(OBJS) ${LIB_DIR}/libevent.so
+$(TARGET): $(OBJS) ${LIB_DIR}/libevent.so $(HTTP_LIB_TARGET)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $^
 
@@ -61,12 +68,16 @@ $(BUILD_DIR)/%.o: $(LIB_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
 
+$(HTTP_LIB_TARGET): $(HTTP_LIB_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CFLAGS) -I./include -fPIC -shared -o $@ $^
+
 ${LIB_DIR}/libevent.so: ${LIB_DIR}/libevent.c
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
-	rm -f $(LIB_TARGET) libs/libevent.so
+	rm -f $(LIB_TARGET) libs/libevent.so $(HTTP_LIB_TARGET)
 
 purge:
 	rm -rf ./modules/*.so
