@@ -143,7 +143,7 @@ size_t http_kv_size(const http_kv_store_t *store) {
 }
 
 /* Hypertext Transfer Protocol -- HTTP/1.1 Spec:  https://datatracker.ietf.org/doc/html/rfc2616 */
-const char *http_methods[] = {"GET", "POST", "PUT", "DELETE"};
+const char *http_methods[] = {"GET", "POST", "PUT", "DELETE", "OPTIONS"};
 const char *http_errors[] = {
     "400 Bad Request", /* Unknown defaults to 400 */
     "101 Switching Protocols",
@@ -171,6 +171,8 @@ static void http_parse_method(const char *method, http_request_t *req) {
         req->method = HTTP_PUT;
     } else if (strncmp(method, "DELETE", 6) == 0) {
         req->method = HTTP_DELETE;
+    } else if (strncmp(method, "OPTIONS", 7) == 0) {
+        req->method = HTTP_OPTIONS;
     } else {
         req->method = -1;
     }

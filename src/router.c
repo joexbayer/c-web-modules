@@ -236,7 +236,6 @@ int router_gateway_json(struct router *router, http_response_t* res) {
     json_decref(root);
 
     http_kv_insert(res->headers, "Content-Type", strdup("application/json"));
-    http_kv_insert(res->headers, "Access-Control-Allow-Origin", strdup("*"));
     if (res->body) {
         free(res->body);
     }

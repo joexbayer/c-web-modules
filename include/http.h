@@ -39,6 +39,7 @@ typedef enum http_method {
     HTTP_POST,
     HTTP_PUT,
     HTTP_DELETE,
+    HTTP_OPTIONS,
 } http_method_t;
 extern const char *http_methods[];
 

@@ -64,6 +64,16 @@ typedef enum env {
     PROD
 } env_t;
 
+typedef struct cors_config {
+    const char *allow_origins;
+    const char *allow_methods;
+    const char *allow_headers;
+    int allow_credentials;
+    int max_age;
+    int allow_all_origins;
+    int allow_origin_list;
+} cors_config_t;
+
 struct server_config {
     uint16_t port;
     int thread_pool_size;
@@ -75,6 +85,7 @@ struct server_config {
     size_t admin_key_len;
     char module_dir[SO_PATH_MAX_LEN];
     int purge_modules;
+    cors_config_t cors;
 };
 
 struct server_state {
@@ -133,6 +144,130 @@ static void server_load_auth_config(struct server_state *state) {
         state->config.admin_key = NULL;
         state->config.admin_key_len = 0;
     }
+}
+
+static int cors_origin_matches_list(const char *list, const char *origin) {
+    const char *cursor = list;
+    size_t origin_len = strlen(origin);
+
+    while (*cursor != '\0') {
+        while (*cursor == ' ' || *cursor == '\t') {
+            cursor++;
+        }
+
+        const char *segment_start = cursor;
+        while (*cursor != '\0' && *cursor != ',') {
+            cursor++;
+        }
+        const char *segment_end = cursor;
+
+        while (segment_end > segment_start &&
+               (segment_end[-1] == ' ' || segment_end[-1] == '\t')) {
+            segment_end--;
+        }
+
+        size_t segment_len = (size_t)(segment_end - segment_start);
+        if (segment_len == origin_len &&
+            strncmp(segment_start, origin, origin_len) == 0) {
+            return 1;
+        }
+
+        if (*cursor == ',') {
+            cursor++;
+        }
+    }
+
+    return 0;
+}
+
+static const char *cors_select_origin(const cors_config_t *cors,
+                                      const http_request_t *req,
+                                      int *vary_origin) {
+    const char *origin = http_kv_get(req->headers, "Origin");
+
+    *vary_origin = 0;
+    if (!cors->allow_origins || cors->allow_origins[0] == '\0') {
+        return NULL;
+    }
+
+    if (cors->allow_all_origins) {
+        if (cors->allow_credentials && origin && origin[0] != '\0') {
+            *vary_origin = 1;
+            return origin;
+        }
+        return "*";
+    }
+
+    if (cors->allow_origin_list) {
+        if (!origin || origin[0] == '\0') {
+            return NULL;
+        }
+        if (cors_origin_matches_list(cors->allow_origins, origin)) {
+            *vary_origin = 1;
+            return origin;
+        }
+        return NULL;
+    }
+
+    return cors->allow_origins;
+}
+
+static void cors_add_header(http_response_t *res, const char *key, const char *value) {
+    if (http_kv_get(res->headers, key) != NULL) {
+        return;
+    }
+    char *dup_value = strdup(value);
+    if (!dup_value) {
+        perror("[ERROR] Failed to allocate CORS header value");
+        return;
+    }
+    if (http_kv_insert(res->headers, key, dup_value) != 0) {
+        free(dup_value);
+    }
+}
+
+static void cors_apply_response(const cors_config_t *cors,
+                                const http_request_t *req,
+                                http_response_t *res) {
+    int vary_origin = 0;
+    const char *origin_value = cors_select_origin(cors, req, &vary_origin);
+    if (!origin_value) {
+        return;
+    }
+
+    cors_add_header(res, "Access-Control-Allow-Origin", origin_value);
+    if (vary_origin) {
+        cors_add_header(res, "Vary", "Origin");
+    }
+    if (cors->allow_credentials) {
+        cors_add_header(res, "Access-Control-Allow-Credentials", "true");
+    }
+
+    if (req->method == HTTP_OPTIONS) {
+        if (cors->allow_methods && cors->allow_methods[0] != '\0') {
+            cors_add_header(res, "Access-Control-Allow-Methods", cors->allow_methods);
+        }
+        if (cors->allow_headers && cors->allow_headers[0] != '\0') {
+            cors_add_header(res, "Access-Control-Allow-Headers", cors->allow_headers);
+        }
+        if (cors->max_age > 0) {
+            char max_age[32];
+            snprintf(max_age, sizeof(max_age), "%d", cors->max_age);
+            cors_add_header(res, "Access-Control-Max-Age", max_age);
+        }
+    }
+}
+
+static void server_set_cors_defaults(struct server_state *state) {
+    state->config.cors = (cors_config_t){
+        .allow_origins = "*",
+        .allow_methods = "GET, POST, PUT, DELETE, OPTIONS",
+        .allow_headers = "Content-Type, Authorization",
+        .allow_credentials = 0,
+        .max_age = 600,
+        .allow_all_origins = 1,
+        .allow_origin_list = 0
+    };
 }
 
 static int auth_is_localhost(int fd) {
@@ -326,6 +461,13 @@ static struct connection* server_accept(struct server_state *state, struct conne
 }
 
 static int gateway(struct server_state *state, int fd, http_request_t *req, http_response_t *res) {
+    if (req->method == HTTP_OPTIONS) {
+        res->status = HTTP_200_OK;
+        res->content_length = 0;
+        res->body[0] = '\0';
+        return 0;
+    }
+
     if (strncmp(req->path, "/favicon.ico", 12) == 0) {
         res->status = HTTP_404_NOT_FOUND;
         snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n");
@@ -570,6 +712,8 @@ static void thread_handle_client(void *arg) {
             gateway(state, c->sockfd, &req, &res);
         }
 
+        cors_apply_response(&state->config.cors, &req, &res);
+
         if (thread_pool_is_full(state->pool)) {
             http_kv_insert(res.headers, "Connection", strdup("close"));
             close_connection = 1;
@@ -686,6 +830,7 @@ int main(int argc, char *argv[]) {
 #endif
     server_load_shutdown_policy(&state);
     server_load_auth_config(&state);
+    server_set_cors_defaults(&state);
 
     int opt;
     static struct option long_options[] = {
