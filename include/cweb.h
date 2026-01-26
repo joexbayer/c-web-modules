@@ -19,12 +19,15 @@ struct symbols {
     void* (*resolv)(void *user_data, const char* module, const char* symbol);
 };
 
+struct job_system;
+
 typedef struct cweb_context {
     struct container *cache;
     struct scheduler *scheduler;
     struct sqldb *database;
     struct crypto *crypto;
     struct symbols *symbols;
+    struct job_system *jobs;
 } cweb_context_t;
 
 typedef int (*entry_t)(struct cweb_context *, http_request_t *, http_response_t *);
@@ -39,6 +42,26 @@ typedef struct ws_info {
     void (*on_message)(struct cweb_context *, websocket_t *, const char *message, size_t length);
     void (*on_close)(struct cweb_context *, websocket_t *);
 } websocket_info_t;
+
+typedef struct job_payload {
+    const char *json;
+    size_t json_len;
+} job_payload_t;
+
+typedef struct job_ctx {
+    const char *job_uuid;
+    int (*emit_event)(struct job_ctx *job, const char *type, const char *data_json);
+    int (*set_result)(struct job_ctx *job, const char *result_json);
+    int (*set_error)(struct job_ctx *job, const char *error_text);
+} job_ctx_t;
+
+typedef int (*job_run_t)(struct cweb_context *ctx, const job_payload_t *payload, job_ctx_t *job);
+
+typedef struct job_info {
+    const char *name;
+    job_run_t run;
+    void (*cancel)(struct cweb_context *ctx, const char *job_uuid);
+} job_info_t;
 
 /* Route information */
 typedef struct route_info {
@@ -58,6 +81,8 @@ typedef struct module {
     int size;
     websocket_info_t websockets[10];
     int ws_size;
+    job_info_t jobs[10];
+    int job_size;
     
     void (*onload)(struct cweb_context *);
     void (*unload)(struct cweb_context *);

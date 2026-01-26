@@ -10,6 +10,7 @@
 #include <container.h>
 #include <db.h>
 #include <crypto.h>
+#include <jobs.h>
 
 typedef enum shutdown_policy {
     SHUTDOWN_POLICY_GRACEFUL = 0,
@@ -22,6 +23,7 @@ typedef struct shutdown_context {
     struct scheduler *scheduler;
     struct ws_server *ws;
     struct router *router;
+    job_system_t *jobs;
     cweb_context_t *ctx;
     struct crypto *crypto;
     struct sqldb *database;

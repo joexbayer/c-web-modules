@@ -28,6 +28,7 @@
 #include "crypto.h"
 #include "engine.h"
 #include "ws.h"
+#include "jobs.h"
 #include "container.h"
 #include "shutdown.h"
 
@@ -80,6 +81,7 @@ struct server_state {
     struct symbols symbols;
     struct router router;
     struct ws_server ws;
+    job_system_t jobs;
     struct thread_pool *pool;
     struct server_config config;
     atomic_int active_clients;
@@ -148,6 +150,7 @@ static int server_init_services(struct server_state *state) {
     state->symbols.user_data = &state->router;
     state->symbols.resolv = server_resolve;
     state->ctx.symbols = &state->symbols;
+    state->ctx.jobs = &state->jobs;
 
     if (ws_init(&state->ws) != 0) {
         crypto_shutdown(&state->crypto);
@@ -158,6 +161,16 @@ static int server_init_services(struct server_state *state) {
     }
 
     if (router_init(&state->router, &state->ws, NULL, &state->ctx) != 0) {
+        ws_shutdown(&state->ws, &state->ctx);
+        crypto_shutdown(&state->crypto);
+        sqldb_shutdown(&state->database);
+        scheduler_shutdown(&state->scheduler);
+        container_shutdown(&state->cache);
+        return -1;
+    }
+
+    if (jobs_init(&state->jobs, &state->ctx, &state->router, &state->ws) != 0) {
+        router_shutdown(&state->router, &state->ctx);
         ws_shutdown(&state->ws, &state->ctx);
         crypto_shutdown(&state->crypto);
         sqldb_shutdown(&state->database);
@@ -273,6 +286,15 @@ static int gateway(struct server_state *state, int fd, http_request_t *req, http
     }
 
     if (http_is_websocket_upgrade(req)) {
+        if (strcmp(req->path, "/jobs/ws") == 0) {
+            const websocket_info_t *jobs_ws = jobs_ws_info(&state->jobs);
+            if (!jobs_ws) {
+                res->status = HTTP_500_INTERNAL_SERVER_ERROR;
+                return 0;
+            }
+            ws_handle_client(&state->ws, &state->ctx, fd, req, res, (struct ws_info *)jobs_ws);
+            return 0;
+        }
         struct ws_route ws = router_ws_find(&state->router, req->path);
         if (ws.info == NULL) {
             res->status = HTTP_404_NOT_FOUND;
@@ -284,6 +306,15 @@ static int gateway(struct server_state *state, int fd, http_request_t *req, http
 
         pthread_rwlock_unlock(ws.rwlock);
 
+        return 0;
+    }
+
+    if (strncmp(req->path, "/jobs", 5) == 0 && (req->path[5] == '\0' || req->path[5] == '/')) {
+        if (jobs_handle_http(&state->jobs, &state->ctx, req, res)) {
+            return 0;
+        }
+        res->status = HTTP_404_NOT_FOUND;
+        snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n");
         return 0;
     }
 
@@ -644,6 +675,7 @@ int main(int argc, char *argv[]) {
             .scheduler = &state.scheduler,
             .ws = &state.ws,
             .router = &state.router,
+            .jobs = &state.jobs,
             .ctx = &state.ctx,
             .crypto = &state.crypto,
             .database = &state.database,
@@ -695,6 +727,7 @@ int main(int argc, char *argv[]) {
         .scheduler = &state.scheduler,
         .ws = &state.ws,
         .router = &state.router,
+        .jobs = &state.jobs,
         .ctx = &state.ctx,
         .crypto = &state.crypto,
         .database = &state.database,

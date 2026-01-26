@@ -5,32 +5,33 @@
 > It is not designed for production use, and there may be bugs, limitations, or incomplete features.  
 > Use at your own discretion.
 
-Welcome to **c-web-modules**, a modular and efficient approach to web development in C. Inspired by kernel modules and AWS Lambda, this project allows you to upload C code directly to the server, which compiles and deploys it at runtime. No precompilation is necessary, and the server can easily be upgraded to include more features or external libraries.
+> **Alert:** Rework in progress. The “web framework” direction isn’t a good fit for C because HTML/templates add too much complexity. I’m refocusing this on compute-first modules where C is a better fit.  
+
+Welcome to **c-web-modules**, a C plugin host for CPU bound web workloads. Inspired by kernel modules and AWS Lambda, this project lets you upload C code directly to the server, compile it at runtime, and hot-swap the logic without restarting the host.
 
 ## Documentation
 
 For more detailed information, please refer to the [official documentation](https://joexbayer.github.io/c-web-modules/).
 
-## Addressing the Challenges of C for Web Development  
+## What it's for  
 
-C isn’t typically the go-to for web development, and there are valid reasons why. Here’s how **c-web-modules** tackles some of the common concerns:  
+c-web-modules is focused on **compute + streaming**, not traditional frontend work. It is designed for workloads where you want C-level performance and low-latency streaming.
 
-1. **Slow Build Cycles**:  
-   Instead of recompiling the entire application, **c-web-modules** allows you to upload raw C code. The server compiles it on-the-fly, enabling rapid iteration and eliminating the need for restarts. This is as close to "hot reloading" as you can get with C.  
+### Core model: HTTP endpoints, WebSockets, Jobs
 
-2. **Speed vs. Practicality**:  
-   While raw computation speed might not always be critical for web apps, **c-web-modules** shines in scenarios where performance matters, like handling heavy data processing or real-time applications. Modules let you inject optimized performance-critical code where it’s needed.  
+- HTTP endpoints: synchronous request/response routes defined by modules.
+- WebSockets: long-lived connections for streaming, interactive updates, and push.
+- Jobs: asynchronous work units triggered via server-owned `/jobs` APIs.
+- Jobs stream events over `/jobs/ws` and expose durable status via `/jobs/:uuid`.
+- Hot-swap: routes, websockets, and jobs can be updated without restarting the server.
 
-3. **Manpower and Time-to-Market**:  
-   By automating common server tasks (e.g., routing, module integration, and shared resources like SQLite3), **c-web-modules** reduces boilerplate and accelerates development compared to starting from scratch. It's not as fast as scripting languages, but it's far from the manual grind of traditional C projects.  
+### Good use cases
 
-4. **Memory Management and Crashes**:  
-   Modules are isolated and dynamically managed, reducing the risk of crashing the entire server. While C still requires careful memory management, the modular approach lets you focus on smaller, manageable pieces of functionality rather than tackling a monolithic application.  
+- CPU-bound transforms: image/video frames, audio DSP, compression, hashing.
+- Streamed analytics: log parsing, metrics aggregation, JSON/CSV crunching.
+- Real-time pipelines: ingest -> transform -> stream results.
 
-5. **Pre-Made Solutions**:  
-   By supporting external libraries like SQLite3, OpenSSL, and Jansson out of the box, **c-web-modules** leverages existing solutions, allowing developers to skip reinventing the wheel and focus on their application's unique needs.  
-
-This isn’t a silver bullet—it’s a proof of concept. But **c-web-modules** aims to bring C’s raw power into the web world in a more developer-friendly way.  
+This isn’t a silver bullet—it’s a proof of concept. But **c-web-modules** aims to bring C’s raw power into compute-first web systems with fast iteration and streaming.
 
 ---
 
@@ -44,63 +45,110 @@ The production environment uses TLS for encrypting, by default it expects there 
 openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt -days 365 -nodes
 ```
 
-## Example: Counter Module  
+## Examples (by core part)
 
-Here’s a simple example of a module that keeps track of a counter and returns its value every time you visit `/counter`.
-See more examples in the `example/` folder.
+### HTTP endpoints
+Modules register routes with method + path. Paths must be unique across modules and can use regex.
 
-[Websocket](example/websocket.c)
+### WebSockets
+Modules register WebSocket handlers and keep connections alive across hot-swaps.
 
-[Chat application](example/chat.c)
+### Jobs
+Modules register jobs and the server triggers them via `/jobs/*`.
+
+## Examples
+
+[Counter](example/counter.c)
+
+[WebSocket Echo](example/websocket.c)
+
+[Chat](example/chat.c)
+
+[Static File Server](example/static.c)
 
 [JSON](example/json.c)
 
-[TODO App](example/todo.c)
-
-SQLite3 App (TODO)
-
-#### `counter.c`  
-```c
-#include <stdio.h>
-#include <cweb.h>
-
-static int counter = 0;
-static const char* template = 
-    "<html>\n"
-    "  <body>\n"
-    "    <h1>Counter: %d</h1>\n"
-    "  </body>\n"
-    "</html>\n";
-
-/* Route: /counter - Method GET */
-static int index_route(http_request_t *req, http_response_t *res) {
-    snprintf(res->body, HTTP_RESPONSE_SIZE, template, counter++);
-    res->status = HTTP_200_OK;
-    return 0;
-}
-
-/* Define the routes for the module */
-export module_t config = {
-    .name = "counter",
-    .author = "cweb",
-    .routes = {
-        {"/counter", "GET", index_route, NONE},
-    },
-    .size = 1,
-};
-```
+[Job Sum](example/job_sum.c)
 
 ---
 
 ## Why Use c-web-modules?  
 
-1. **Code Deployment**: Upload raw C code to the server for on-the-fly compilation and deployment.  
-2. **No Precompilation**: Simplify your workflow—focus on writing code, and let the server handle compilation.  
-3. **Dynamic Updates**: Add or replace functionality without downtime or recompiling the entire server.  
-4. **Performance**: Written in C, the server offers unmatched speed and efficiency.  
-5. **WebSocket Support**: Even when modules are updated, existing WebSocket connections remain alive.  
-6. **Built-In Features**: Includes a cross-module cache and scheduler for deferred tasks.
-7. **Regex in Paths**: Define routes using regular expressions for more flexible and powerful URL matching. 
+1. **Compute-first runtime**: Designed for CPU-bound work and streaming outputs.  
+2. **Hot-swappable modules**: Deploy new code without restarting the server.  
+3. **Stable job semantics**: Running jobs stick to the old module; new jobs use the updated module.  
+4. **Traceable results**: Job status includes `module_hash` for provenance.  
+5. **WebSocket streaming**: Keep long-lived result streams alive through module updates.  
+6. **Built-In Features**: Includes a cross-module cache and scheduler for deferred tasks.  
+7. **Regex in Paths**: Define routes using regular expressions for more flexible and powerful URL matching.  
+
+## HTTP endpoints (module routes)
+
+Modules expose HTTP endpoints via `module_t.routes[]`. Each route includes a path, HTTP method, and handler.
+Paths must be unique across modules; regex paths are supported for flexible matching.
+
+## WebSockets (module handlers)
+
+Modules expose WebSocket handlers via `module_t.websockets[]`. Connections stay alive across hot-swaps, and
+handlers are swapped when you deploy a new module.
+
+## Jobs system (server-level)
+
+The server provides a durable, SQLite-backed jobs system. Modules register jobs; the server triggers them and manages status, retries, and streaming.
+
+### Deployment
+
+Jobs deploy the same way as HTTP/WS modules: upload a C module to `/mgnt`. A single module can define routes, WebSockets, and jobs at the same time.
+
+### Reserved paths
+
+`/jobs/*` is a protected namespace owned by the server. Modules cannot register routes under `/jobs/`.
+
+### Endpoints
+
+- `POST /jobs` - Trigger a job with `{ "module": "mod", "job": "name", "payload": { ... } }`
+- `GET /jobs/:uuid` - Job status, including `module_hash`
+- `POST /jobs/:uuid/cancel` - Cancel a job
+- `GET /jobs?state=running` - List jobs by state
+
+### WebSocket
+
+- `WS /jobs/ws?id=:uuid&since_event_id=456`
+- Streams `job_events` and supports replay from `since_event_id`.
+
+### What is implemented
+
+- Server-owned `/jobs` HTTP API with UUIDs, status, cancel, and list.
+- SQLite schema for durable job state + event log with replay.
+- Jobs defined inside modules (`module_t.jobs[]`) and triggered by name.
+- Module hash computed from uploaded `.so` for provenance in job status.
+- Hot-swap semantics: running jobs keep the old module; new jobs use the updated module.
+- WebSocket job event stream at `/jobs/ws` with `id` and `since_event_id` query params.
+
+### SQLite schema
+
+```
+jobs(
+  id INTEGER PRIMARY KEY,
+  module_name TEXT,
+  job_name TEXT,
+  state TEXT,
+  module_hash TEXT,
+  created_at INTEGER,
+  updated_at INTEGER,
+  payload_json TEXT,
+  result_json TEXT,
+  error_text TEXT
+)
+
+job_events(
+  id INTEGER PRIMARY KEY,
+  job_id INTEGER,
+  ts INTEGER,
+  type TEXT,
+  data_json TEXT
+)
+```
 
 Currently supported external libraries:  
 - **OpenSSL**: Currently only for hashing, but later for secure communication.  

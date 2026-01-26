@@ -89,6 +89,11 @@ void shutdown_run(shutdown_context_t *shutdown_ctx) {
         shutdown_ctx->router = NULL;
     }
 
+    if (shutdown_ctx->jobs) {
+        jobs_shutdown(shutdown_ctx->jobs);
+        shutdown_ctx->jobs = NULL;
+    }
+
     if (shutdown_ctx->ws) {
         ws_shutdown(shutdown_ctx->ws, shutdown_ctx->ctx);
         shutdown_ctx->ws = NULL;

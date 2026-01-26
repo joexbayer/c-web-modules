@@ -149,6 +149,7 @@ static int ws_container_destroy(struct ws_container *container) {
 
     event_del(container->ev);
     close(container->ws->client_fd);
+    free(container->ws->session);
     free(container->ws);
 
     pthread_mutex_unlock(&container->mutex);
@@ -339,6 +340,7 @@ void ws_force_close(struct ws_server *server, struct ws_info *info) {
         if (container->info == info) {
             event_del(container->ev);
             close(container->ws->client_fd);
+            free(container->ws->session);
             free(container->ws);
             free(container);
             list_remove(server->containers, container);
@@ -398,6 +400,18 @@ void ws_handle_client(struct ws_server *server, struct cweb_context *ctx, int sd
         fprintf(stderr, "[ERROR] Failed to create WebSocket container\n");
         res->status = HTTP_500_INTERNAL_SERVER_ERROR;
         return;
+    }
+
+    const char *id = http_kv_get(req->params, "id");
+    const char *since = http_kv_get(req->params, "since_event_id");
+    if (id) {
+        size_t id_len = strlen(id);
+        size_t since_len = since ? strlen(since) : 1;
+        size_t total = id_len + 1 + since_len + 1;
+        container->ws->session = malloc(total);
+        if (container->ws->session) {
+            snprintf(container->ws->session, total, "%s|%s", id, since ? since : "0");
+        }
     }
 
     if (event_add(container->ev) < 0) {
