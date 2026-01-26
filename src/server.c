@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <time.h>
 #include <limits.h>
+#include <stdatomic.h>
 
 #include <pthread.h>
 #include <sys/socket.h>
@@ -28,6 +29,7 @@
 #include "engine.h"
 #include "ws.h"
 #include "container.h"
+#include "shutdown.h"
 
 #define DEFAULT_PORT 8080
 #define ACCEPT_BACKLOG 128
@@ -65,6 +67,8 @@ struct server_config {
     int thread_pool_size;
     char silent_mode;
     env_t environment;
+    int shutdown_timeout_ms;
+    shutdown_policy_t shutdown_policy;
 };
 
 struct server_state {
@@ -78,6 +82,7 @@ struct server_state {
     struct ws_server ws;
     struct thread_pool *pool;
     struct server_config config;
+    atomic_int active_clients;
 };
 
 struct client_task {
@@ -88,6 +93,28 @@ struct client_task {
 static void* server_resolve(void *user_data, const char* module, const char* symbol) {
     struct router *router = (struct router *)user_data;
     return router_resolve(router, module, symbol);
+}
+
+static void server_load_shutdown_policy(struct server_state *state) {
+    state->config.shutdown_timeout_ms = 5000;
+    state->config.shutdown_policy = SHUTDOWN_POLICY_GRACEFUL;
+
+    const char *timeout_env = getenv("CWEB_SHUTDOWN_TIMEOUT_MS");
+    if (timeout_env) {
+        int timeout_ms = atoi(timeout_env);
+        if (timeout_ms >= 0) {
+            state->config.shutdown_timeout_ms = timeout_ms;
+        }
+    }
+
+    const char *force_env = getenv("CWEB_SHUTDOWN_FORCE");
+    if (force_env && atoi(force_env) != 0) {
+        state->config.shutdown_policy = SHUTDOWN_POLICY_FORCE;
+    }
+}
+
+static void server_set_shutdown_policy(struct server_state *state, shutdown_policy_t policy) {
+    state->config.shutdown_policy = policy;
 }
 
 static int server_init_services(struct server_state *state) {
@@ -142,14 +169,6 @@ static int server_init_services(struct server_state *state) {
     return 0;
 }
 
-static void server_shutdown_services(struct server_state *state) {
-    router_shutdown(&state->router, &state->ctx);
-    ws_shutdown(&state->ws, &state->ctx);
-    crypto_shutdown(&state->crypto);
-    sqldb_shutdown(&state->database);
-    scheduler_shutdown(&state->scheduler);
-    container_shutdown(&state->cache);
-}
 
 static struct connection server_init_socket(uint16_t port) {
     struct connection s;
@@ -185,7 +204,7 @@ static struct connection server_init_socket(uint16_t port) {
     return s;
 }
 
-static struct connection* server_accept(struct connection s) {
+static struct connection* server_accept(struct server_state *state, struct connection s) {
     struct connection *c = (struct connection *)malloc(sizeof(struct connection));
     if (c == NULL) {
         perror("Error allocating memory for client");
@@ -194,6 +213,10 @@ static struct connection* server_accept(struct connection s) {
     }
 
     memset(c, 0, sizeof(struct connection));
+
+#ifndef PRODUCTION
+    (void)state;
+#endif
 
     struct sockaddr_in client_addr;
     socklen_t addrlen = (socklen_t)sizeof(client_addr);
@@ -346,6 +369,8 @@ static void thread_handle_client(void *arg) {
     struct server_state *state = task->state;
     struct connection *c = task->connection;
     free(task);
+    atomic_fetch_add(&state->active_clients, 1);
+    int close_socket = 1;
 
     thread_set_timeout(c->sockfd, 2);
 
@@ -501,7 +526,8 @@ static void thread_handle_client(void *arg) {
         if (req.websocket) {
             thread_clear_timeout(c->sockfd);
             ws_confirm_open(&state->ws, &state->ctx, c->sockfd);
-            return;
+            close_socket = 0;
+            goto thread_handle_client_exit;
         }
 
         if (close_connection || req.version == HTTP_VERSION_1_0) {
@@ -511,11 +537,16 @@ static void thread_handle_client(void *arg) {
 thread_handle_client_exit:
 
 #ifdef PRODUCTION
-    SSL_shutdown(c->ssl);
-    SSL_free(c->ssl);
+    if (close_socket && c->ssl) {
+        SSL_shutdown(c->ssl);
+        SSL_free(c->ssl);
+    }
 #endif
-    close(c->sockfd);
+    if (close_socket) {
+        close(c->sockfd);
+    }
     free(c);
+    atomic_fetch_sub(&state->active_clients, 1);
     return;
 }
 
@@ -539,6 +570,7 @@ int main(int argc, char *argv[]) {
 
     struct server_state state;
     memset(&state, 0, sizeof(state));
+    atomic_init(&state.active_clients, 0);
 
     state.config.port = DEFAULT_PORT;
     state.config.thread_pool_size = 0;
@@ -548,9 +580,10 @@ int main(int argc, char *argv[]) {
 #else
     state.config.environment = DEV;
 #endif
+    server_load_shutdown_policy(&state);
 
     int opt;
-    while ((opt = getopt(argc, argv, "p:t:s")) != -1) {
+    while ((opt = getopt(argc, argv, "p:t:sF")) != -1) {
         switch (opt) {
             case 'p':
                 state.config.port = (uint16_t)atoi(optarg);
@@ -561,8 +594,11 @@ int main(int argc, char *argv[]) {
             case 's':
                 state.config.silent_mode = 1;
                 break;
+            case 'F':
+                server_set_shutdown_policy(&state, SHUTDOWN_POLICY_FORCE);
+                break;
             default:
-                fprintf(stderr, "Usage: %s [-p port] [-t thread_pool_size] [-s (silent mode)]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-p port] [-t thread_pool_size] [-s (silent mode)] [-F (force shutdown)]\n", argv[0]);
         }
     }
 
@@ -602,7 +638,21 @@ int main(int argc, char *argv[]) {
 #endif
     if (state.pool == NULL) {
         fprintf(stderr, "[ERROR] Failed to initialize thread pool\n");
-        server_shutdown_services(&state);
+        shutdown_context_t fail_shutdown_ctx = {
+            .listen_fd = -1,
+            .pool = NULL,
+            .scheduler = &state.scheduler,
+            .ws = &state.ws,
+            .router = &state.router,
+            .ctx = &state.ctx,
+            .crypto = &state.crypto,
+            .database = &state.database,
+            .cache = &state.cache,
+            .active_clients = &state.active_clients,
+            .timeout_ms = state.config.shutdown_timeout_ms,
+            .policy = state.config.shutdown_policy
+        };
+        shutdown_run(&fail_shutdown_ctx);
         return 1;
     }
 
@@ -612,10 +662,13 @@ int main(int argc, char *argv[]) {
     printf(" PID: %d\n", getpid());
     printf(" Listening on %s://%s:%d\n", state.config.environment == PROD ? "https" : "http", inet_ntoa(s.address.sin_addr), ntohs(s.address.sin_port));
     while (!stop) {
-        struct connection *client = server_accept(s);
+        struct connection *client = server_accept(&state, s);
         if (client == NULL) {
             if (stop) {
                 break;
+            }
+            if (errno == EINTR) {
+                continue;
             }
             perror("Error accepting client");
             continue;
@@ -636,9 +689,22 @@ int main(int argc, char *argv[]) {
         thread_pool_add_task(state.pool, thread_handle_client, task);
     }
 
-    thread_pool_destroy(state.pool);
-    close(s.sockfd);
-    server_shutdown_services(&state);
+    shutdown_context_t shutdown_ctx = {
+        .listen_fd = s.sockfd,
+        .pool = state.pool,
+        .scheduler = &state.scheduler,
+        .ws = &state.ws,
+        .router = &state.router,
+        .ctx = &state.ctx,
+        .crypto = &state.crypto,
+        .database = &state.database,
+        .cache = &state.cache,
+        .active_clients = &state.active_clients,
+        .timeout_ms = state.config.shutdown_timeout_ms,
+        .policy = state.config.shutdown_policy
+    };
+
+    shutdown_run(&shutdown_ctx);
     printf("[SERVER] Server shutting down gracefully.\n");
 
     return 0;

@@ -2,6 +2,7 @@
 #include "cweb.h"
 #include "router.h"
 #include "ws.h"
+#include "engine.h"
 #include <dlfcn.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -179,7 +180,7 @@ static int update_gateway_entry(struct router *router, int index, const char* so
     void* old_handle = router->entries[index].handle;
 
     if (router->entries[index].module && router->entries[index].module->unload) {
-        router->entries[index].module->unload(ctx);
+        safe_execute_module_hook(router->entries[index].module->unload, ctx);
     }
 
     if (router->entries[index].module) {
@@ -207,7 +208,7 @@ static int update_gateway_entry(struct router *router, int index, const char* so
     }
 
     if (router->entries[index].module->onload) {
-        router->entries[index].module->onload(ctx);
+        safe_execute_module_hook(router->entries[index].module->onload, ctx);
     }
 
     pthread_rwlock_unlock(&router->entries[index].rwlock);
@@ -311,7 +312,7 @@ static void router_cleanup(struct router *router, struct cweb_context *ctx) {
     for (int i = 0; i < router->count; i++) {
         pthread_rwlock_wrlock(&router->entries[i].rwlock);
         if (router->entries[i].module && router->entries[i].module->unload) {
-            router->entries[i].module->unload(ctx);
+            safe_execute_module_hook(router->entries[i].module->unload, ctx);
         }
         if (router->entries[i].module) {
             router_release_routes(router->entries[i].module);

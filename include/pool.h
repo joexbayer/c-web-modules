@@ -28,6 +28,9 @@ struct thread_pool {
 
 struct thread_pool *thread_pool_init(int num_threads);
 void thread_pool_add_task(struct thread_pool *pool, void (*function)(void *), void *arg);
+void thread_pool_request_stop(struct thread_pool *pool);
+int thread_pool_pending_count(struct thread_pool *pool);
+void thread_pool_cancel_all(struct thread_pool *pool);
 void thread_pool_destroy(struct thread_pool *pool);
 int thread_pool_is_full(struct thread_pool *pool);
 

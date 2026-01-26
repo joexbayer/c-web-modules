@@ -95,7 +95,7 @@ static void *thread_pool_worker(void *arg) {
 
         pthread_mutex_unlock(&pool->lock);
 
-        if (task != NULL && !atomic_load(&pool->stop)) {
+        if (task != NULL) {
             task->function(task->arg);
             atomic_fetch_sub(&pool->active_threads, 1);
             free(task);
@@ -130,6 +130,12 @@ void thread_pool_add_task(struct thread_pool *pool, void (*function)(void *), vo
 
     pthread_mutex_lock(&pool->lock);
 
+    if (atomic_load(&pool->stop)) {
+        pthread_mutex_unlock(&pool->lock);
+        free(task);
+        return;
+    }
+
     if (pool->task_tail == NULL) {
         pool->task_queue = task;
         pool->task_tail = task;
@@ -143,6 +149,38 @@ void thread_pool_add_task(struct thread_pool *pool, void (*function)(void *), vo
     pthread_mutex_unlock(&pool->lock);
 }
 
+void thread_pool_request_stop(struct thread_pool *pool) {
+    if (!pool) {
+        return;
+    }
+
+    pthread_mutex_lock(&pool->lock);
+    atomic_store(&pool->stop, 1);
+    pthread_cond_broadcast(&pool->cond);
+    pthread_mutex_unlock(&pool->lock);
+}
+
+int thread_pool_pending_count(struct thread_pool *pool) {
+    if (!pool) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&pool->lock);
+    int pending = pool->queue_length + atomic_load(&pool->active_threads);
+    pthread_mutex_unlock(&pool->lock);
+    return pending;
+}
+
+void thread_pool_cancel_all(struct thread_pool *pool) {
+    if (!pool || !pool->threads) {
+        return;
+    }
+
+    for (int i = 0; i < pool->max_threads; i++) {
+        pthread_cancel(pool->threads[i]);
+    }
+}
+
 void thread_pool_destroy(struct thread_pool *pool) {
     if (!pool) {
         return;
@@ -150,11 +188,7 @@ void thread_pool_destroy(struct thread_pool *pool) {
 
     printf("[INFO] Destroying thread pool\n");
 
-    pthread_mutex_lock(&pool->lock);
-    atomic_store(&pool->stop, 1);
-
-    pthread_cond_broadcast(&pool->cond);
-    pthread_mutex_unlock(&pool->lock);
+    thread_pool_request_stop(pool);
 
     for (int i = 0; i < pool->max_threads; i++) {
         int ret = pthread_join(pool->threads[i], NULL);

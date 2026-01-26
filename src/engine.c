@@ -87,3 +87,17 @@ void safe_execute_handler(handler_t handler, struct cweb_context *ctx, http_requ
         res->status = HTTP_500_INTERNAL_SERVER_ERROR;
     }
 }
+
+void safe_execute_module_hook(void (*hook)(struct cweb_context *), struct cweb_context *ctx) {
+    if (!hook) {
+        return;
+    }
+
+    setup_thread_signals();
+
+    if (sigsetjmp(jump_buffer, 1) == 0) {
+        hook(ctx);
+    } else {
+        fprintf(stderr, "Module hook execution failed: Fatal signal detected.\n");
+    }
+}

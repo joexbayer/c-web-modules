@@ -5,14 +5,21 @@
 static void* scheduler_thread_function(void *arg) {
     struct scheduler *scheduler = (struct scheduler *)arg;
 
-    while (atomic_load(&scheduler->running)) {
+    while (1) {
         pthread_mutex_lock(&scheduler->mutex);
 
-        while (scheduler->size == 0 && atomic_load(&scheduler->running)) {
+        while (scheduler->size == 0 && atomic_load(&scheduler->running) && !atomic_load(&scheduler->draining)) {
             pthread_cond_wait(&scheduler->work_available, &scheduler->mutex);
         }
 
-        if (!atomic_load(&scheduler->running)) {
+        if (scheduler->size == 0 && atomic_load(&scheduler->draining)) {
+            atomic_store(&scheduler->draining, 0);
+            atomic_store(&scheduler->running, 0);
+            pthread_mutex_unlock(&scheduler->mutex);
+            break;
+        }
+
+        if (!atomic_load(&scheduler->running) && scheduler->size == 0) {
             pthread_mutex_unlock(&scheduler->mutex);
             break;
         }
@@ -57,6 +64,8 @@ int scheduler_init(struct scheduler *scheduler, size_t capacity) {
     }
 
     atomic_store(&scheduler->running, 1);
+    atomic_store(&scheduler->accepting, 1);
+    atomic_store(&scheduler->draining, 0);
     if (pthread_create(&scheduler->thread, NULL, scheduler_thread_function, scheduler) != 0) {
         pthread_cond_destroy(&scheduler->work_available);
         pthread_mutex_destroy(&scheduler->mutex);
@@ -71,7 +80,7 @@ void scheduler_shutdown(struct scheduler *scheduler) {
         return;
     }
 
-    atomic_store(&scheduler->running, 0);
+    scheduler_request_stop(scheduler, 0);
     pthread_cond_signal(&scheduler->work_available);
     pthread_join(scheduler->thread, NULL);
 
@@ -106,6 +115,11 @@ int scheduler_add(struct scheduler *scheduler, work_t work, void *data, worker_s
     new_work->data = data;
     new_work->next = NULL;
 
+    if (!atomic_load(&scheduler->accepting)) {
+        free(new_work);
+        return -1;
+    }
+
     pthread_mutex_lock(&scheduler->mutex);
 
     if (scheduler->capacity && scheduler->size >= scheduler->capacity) {
@@ -126,4 +140,39 @@ int scheduler_add(struct scheduler *scheduler, work_t work, void *data, worker_s
     pthread_cond_signal(&scheduler->work_available);
 
     return 0;
+}
+
+void scheduler_request_stop(struct scheduler *scheduler, int drain) {
+    if (!scheduler) {
+        return;
+    }
+
+    atomic_store(&scheduler->accepting, 0);
+    if (drain) {
+        atomic_store(&scheduler->draining, 1);
+        atomic_store(&scheduler->running, 1);
+    } else {
+        atomic_store(&scheduler->draining, 0);
+        atomic_store(&scheduler->running, 0);
+    }
+    pthread_cond_signal(&scheduler->work_available);
+}
+
+int scheduler_pending_count(struct scheduler *scheduler) {
+    if (!scheduler) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&scheduler->mutex);
+    int pending = (int)scheduler->size;
+    pthread_mutex_unlock(&scheduler->mutex);
+    return pending;
+}
+
+void scheduler_cancel(struct scheduler *scheduler) {
+    if (!scheduler) {
+        return;
+    }
+
+    pthread_cancel(scheduler->thread);
 }
