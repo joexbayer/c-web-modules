@@ -2,6 +2,7 @@
 #define CWEB_H
 
 #include <http.h>
+#include <cweb_config.h>
 #include <container.h>
 #include <scheduler.h>
 #include <db.h>
@@ -77,11 +78,11 @@ typedef struct route_info {
 typedef struct module {
     char name[128];
     char author[128];
-    route_info_t routes[10];
+    route_info_t routes[MAX_ROUTES];
     int size;
-    websocket_info_t websockets[10];
+    websocket_info_t websockets[MAX_WEBSOCKETS];
     int ws_size;
-    job_info_t jobs[10];
+    job_info_t jobs[MAX_JOBS];
     int job_size;
     
     void (*onload)(struct cweb_context *);

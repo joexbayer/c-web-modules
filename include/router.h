@@ -6,9 +6,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <cweb.h>
-
-#define SO_PATH_MAX_LEN 256
-#define ROUTER_MAX_MODULES 100
+#include <cweb_config.h>
 
 typedef int (*handler_t)(struct cweb_context *, http_request_t *, http_response_t *);
 
