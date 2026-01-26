@@ -31,8 +31,6 @@ c-web-modules is focused on **compute + streaming**, not traditional frontend wo
 - Streamed analytics: log parsing, metrics aggregation, JSON/CSV crunching.
 - Real-time pipelines: ingest -> transform -> stream results.
 
-This isn’t a silver bullet—it’s a proof of concept. But **c-web-modules** aims to bring C’s raw power into compute-first web systems with fast iteration and streaming.
-
 ---
 
 # Getting started
@@ -82,20 +80,6 @@ Modules register jobs and the server triggers them via `/jobs/*`.
 6. **Built-In Features**: Includes a cross-module cache and scheduler for deferred tasks.  
 7. **Regex in Paths**: Define routes using regular expressions for more flexible and powerful URL matching.  
 
-## HTTP endpoints (module routes)
-
-Modules expose HTTP endpoints via `module_t.routes[]`. Each route includes a path, HTTP method, and handler.
-Paths must be unique across modules; regex paths are supported for flexible matching.
-
-## WebSockets (module handlers)
-
-Modules expose WebSocket handlers via `module_t.websockets[]`. Connections stay alive across hot-swaps, and
-handlers are swapped when you deploy a new module.
-
-## Jobs system (server-level)
-
-The server provides a durable, SQLite-backed jobs system. Modules register jobs; the server triggers them and manages status, retries, and streaming.
-
 ### Deployment
 
 Jobs deploy the same way as HTTP/WS modules: upload a C module to `/mgnt`. A single module can define routes, WebSockets, and jobs at the same time.
@@ -115,6 +99,12 @@ Jobs deploy the same way as HTTP/WS modules: upload a C module to `/mgnt`. A sin
 
 - `WS /jobs/ws?id=:uuid&since_event_id=456`
 - Streams `job_events` and supports replay from `since_event_id`.
+
+### Authentication
+
+- Set `CWEB_ADMIN_KEY` to require an admin key for `/mgnt`, `/jobs`, and `/jobs/ws`.
+- Send `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+- In DEV builds, requests from `127.0.0.1` are allowed without a key.
 
 ### What is implemented
 

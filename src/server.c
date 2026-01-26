@@ -70,6 +70,8 @@ struct server_config {
     env_t environment;
     int shutdown_timeout_ms;
     shutdown_policy_t shutdown_policy;
+    const char *admin_key;
+    size_t admin_key_len;
 };
 
 struct server_state {
@@ -117,6 +119,63 @@ static void server_load_shutdown_policy(struct server_state *state) {
 
 static void server_set_shutdown_policy(struct server_state *state, shutdown_policy_t policy) {
     state->config.shutdown_policy = policy;
+}
+
+static void server_load_auth_config(struct server_state *state) {
+    const char *admin_key = getenv("CWEB_ADMIN_KEY");
+    if (admin_key && admin_key[0] != '\0') {
+        state->config.admin_key = admin_key;
+        state->config.admin_key_len = strlen(admin_key);
+    } else {
+        state->config.admin_key = NULL;
+        state->config.admin_key_len = 0;
+    }
+}
+
+static int auth_is_localhost(int fd) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    if (getpeername(fd, (struct sockaddr *)&addr, &len) != 0) {
+        return 0;
+    }
+    return addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+}
+
+static const char *auth_extract_token(const http_request_t *req) {
+    const char *api_key = http_kv_get(req->headers, "X-API-Key");
+    if (api_key && api_key[0] != '\0') {
+        return api_key;
+    }
+
+    const char *auth = http_kv_get(req->headers, "Authorization");
+    if (!auth) {
+        return NULL;
+    }
+    if (strncmp(auth, "Bearer ", 7) == 0) {
+        return auth + 7;
+    }
+    return auth;
+}
+
+static int auth_require_admin(struct server_state *state, int fd, http_request_t *req, http_response_t *res) {
+    if (state->config.environment == DEV && auth_is_localhost(fd)) {
+        return 1;
+    }
+
+    if (!state->config.admin_key) {
+        res->status = HTTP_401_UNAUTHORIZED;
+        snprintf(res->body, HTTP_RESPONSE_SIZE, "admin key required\n");
+        return 0;
+    }
+
+    const char *token = auth_extract_token(req);
+    if (token && strcmp(token, state->config.admin_key) == 0) {
+        return 1;
+    }
+
+    res->status = HTTP_401_UNAUTHORIZED;
+    snprintf(res->body, HTTP_RESPONSE_SIZE, "unauthorized\n");
+    return 0;
 }
 
 static int server_init_services(struct server_state *state) {
@@ -271,6 +330,9 @@ static int gateway(struct server_state *state, int fd, http_request_t *req, http
     }
 
     if (strncmp(req->path, MODULE_URL, 6) == 0) {
+        if (!auth_require_admin(state, fd, req, res)) {
+            return 0;
+        }
         if (req->method == HTTP_GET) {
             router_gateway_json(&state->router, res);
         } else if (req->method == HTTP_POST) {
@@ -287,6 +349,9 @@ static int gateway(struct server_state *state, int fd, http_request_t *req, http
 
     if (http_is_websocket_upgrade(req)) {
         if (strcmp(req->path, "/jobs/ws") == 0) {
+            if (!auth_require_admin(state, fd, req, res)) {
+                return 0;
+            }
             const websocket_info_t *jobs_ws = jobs_ws_info(&state->jobs);
             if (!jobs_ws) {
                 res->status = HTTP_500_INTERNAL_SERVER_ERROR;
@@ -310,6 +375,9 @@ static int gateway(struct server_state *state, int fd, http_request_t *req, http
     }
 
     if (strncmp(req->path, "/jobs", 5) == 0 && (req->path[5] == '\0' || req->path[5] == '/')) {
+        if (!auth_require_admin(state, fd, req, res)) {
+            return 0;
+        }
         if (jobs_handle_http(&state->jobs, &state->ctx, req, res)) {
             return 0;
         }
@@ -612,6 +680,7 @@ int main(int argc, char *argv[]) {
     state.config.environment = DEV;
 #endif
     server_load_shutdown_policy(&state);
+    server_load_auth_config(&state);
 
     int opt;
     while ((opt = getopt(argc, argv, "p:t:sF")) != -1) {

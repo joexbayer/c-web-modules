@@ -312,6 +312,12 @@ export module_t config = {
         <li>GET /jobs?state=running - List jobs by state</li>
       </ul>
       <p>WebSocket: WS /jobs/ws?id=:uuid&amp;since_event_id=456 (streams job_events with replay support).</p>
+      <h3>Authentication</h3>
+      <ul>
+        <li>Set CWEB_ADMIN_KEY to require an admin key for /mgnt, /jobs, and /jobs/ws.</li>
+        <li>Send X-API-Key: &lt;key&gt; or Authorization: Bearer &lt;key&gt;.</li>
+        <li>In DEV builds, requests from 127.0.0.1 are allowed without a key.</li>
+      </ul>
       <p>Implemented details:</p>
       <ul>
         <li>Server-owned /jobs API with UUIDs, status, cancel, and list.</li>
