@@ -60,7 +60,8 @@ static void html_tag(struct html_builder *builder, const char *tag, const char *
     va_end(args);
 }
 
-static int index_route(struct http_request *req, struct http_response *res) {
+static int index_route(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
+    struct sqldb *db = ctx->database;
 
     struct html_builder builder;
     html_builder_init(&builder);
@@ -70,21 +71,21 @@ static int index_route(struct http_request *req, struct http_response *res) {
     /* Get modules from database */
     const char *sql = "SELECT * FROM module";
     sqlite3_stmt *stmt;
-    if (database->prepare(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+    if (db->prepare(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         fprintf(stderr, "Failed to prepare statement\n");
         return -1;
     }
     
-    while (database->step(stmt) == SQLITE_ROW) {
-        const char *author = database->column_text(stmt, 0);
-        const char *name = database->column_text(stmt, 1);
-        const char *code = database->column_text(stmt, 2);
+    while (db->step(stmt) == SQLITE_ROW) {
+        const char *author = db->column_text(stmt, 0);
+        const char *name = db->column_text(stmt, 1);
+        const char *code = db->column_text(stmt, 2);
 
         html_tag(&builder, "li", "%s - %s", author, name);
         html_tag(&builder, "pre", "%s", code);
     }
 
-    database->finalize(stmt);
+    db->finalize(stmt);
 
     html_append(&builder, 
         "<form action=\"/webui\" method=\"POST\" enctype=\"multipart/form-data\">"
@@ -112,19 +113,21 @@ static int index_route(struct http_request *req, struct http_response *res) {
     return 0;
 }
 
-static int clear(struct http_request *req, struct http_response *res) {
+static int clear(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
+    struct sqldb *db = ctx->database;
     const char *sql = "DELETE FROM module";
-    if (database->exec(sql, NULL, NULL) != SQLITE_OK) {
+    if (db->exec(db, sql, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "Failed to clear table\n");
         return -1;
     }
 
     res->status = HTTP_302_FOUND;
-    http_kv_insert(res->headers, "Location", "/webui");
+    http_kv_insert(res->headers, "Location", strdup("/webui"));
     return 0;
 }
 
-static int add(struct http_request *req, struct http_response *res) {
+static int add(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
+    struct sqldb *db = ctx->database;
     const char *author = http_kv_get(req->data, "author");
     const char *name = http_kv_get(req->data, "name");
     const char *code = http_kv_get(req->data, "code");
@@ -134,41 +137,42 @@ static int add(struct http_request *req, struct http_response *res) {
 
     const char *sql = "INSERT INTO module (author, name, code) VALUES (?, ?, ?)";
     sqlite3_stmt *stmt;
-    if (database->prepare(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+    if (db->prepare(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         fprintf(stderr, "Failed to prepare statement\n");
         return -1;
     }
 
-    if (database->bind_text(stmt, 1, author, -1, NULL) != SQLITE_OK ||
-        database->bind_text(stmt, 2, name, -1, NULL) != SQLITE_OK ||
-        database->bind_text(stmt, 3, code, -1, NULL) != SQLITE_OK) {
+    if (db->bind_text(stmt, 1, author, -1, NULL) != SQLITE_OK ||
+        db->bind_text(stmt, 2, name, -1, NULL) != SQLITE_OK ||
+        db->bind_text(stmt, 3, code, -1, NULL) != SQLITE_OK) {
         fprintf(stderr, "Failed to bind parameters\n");
         return -1;
     }
 
-    if (database->step(stmt) != SQLITE_DONE) {
+    if (db->step(stmt) != SQLITE_DONE) {
         fprintf(stderr, "Failed to execute statement\n");
         return -1;
     }
 
-    database->finalize(stmt);
+    db->finalize(stmt);
 
     res->status = HTTP_302_FOUND;
-    http_kv_insert(res->headers, "Location", "/webui");
+    http_kv_insert(res->headers, "Location", strdup("/webui"));
     return 0;
 }
 
-static void onload(){
+static void onload(struct cweb_context *ctx) {
+    struct sqldb *db = ctx->database;
     printf("[WEBUI] Loaded.\n");
 
     const char *create_table_sql = "CREATE TABLE IF NOT EXISTS module (author TEXT, name TEXT, code TEXT);";
-    if (database->exec(create_table_sql, NULL, NULL) != SQLITE_OK) {
+    if (db->exec(db, create_table_sql, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "Failed to create table\n");
         return;
     }
 }
 
-static void unload(){
+static void unload(struct cweb_context *ctx) {
     printf("[WEBUI] Unloaded.\n");
 }
 

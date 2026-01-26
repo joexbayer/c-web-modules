@@ -1,5 +1,6 @@
 #include "http.h"
 #include "router.h"
+#include "engine.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,10 +11,8 @@
 #include <sys/wait.h>
 #include <setjmp.h>
 
-/* Thread-local storage for sigjmp_buf */
 static __thread sigjmp_buf jump_buffer;
 
-/* Signal handler for fatal errors */
 static void fault_handler(int sig, siginfo_t *info, void *ucontext) {
     (void)ucontext;
     const char *signal_name;
@@ -31,8 +30,7 @@ static void fault_handler(int sig, siginfo_t *info, void *ucontext) {
     siglongjmp(jump_buffer, 1);
 }
 
-/* Setup signal handlers for the process */
-__attribute__((constructor)) void global_signal_setup() {
+void engine_init(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = fault_handler;
@@ -48,8 +46,10 @@ __attribute__((constructor)) void global_signal_setup() {
     }
 }
 
-/* Mask all fatal signals in a thread */
-void block_signals_in_thread() {
+void engine_shutdown(void) {
+}
+
+void block_signals_in_thread(void) {
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGSEGV);
@@ -63,8 +63,7 @@ void block_signals_in_thread() {
     }
 }
 
-/* Unmask signals in the thread for safe execution */
-void setup_thread_signals() {
+void setup_thread_signals(void) {
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGSEGV);
@@ -78,12 +77,11 @@ void setup_thread_signals() {
     }
 }
 
-/* Safely execute a handler */
-void safe_execute_handler(handler_t handler, struct http_request *req, struct http_response *res) {
+void safe_execute_handler(handler_t handler, struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     setup_thread_signals();
 
     if (sigsetjmp(jump_buffer, 1) == 0) {
-        handler(req, res);
+        handler(ctx, req, res);
     } else {
         snprintf(res->body, HTTP_RESPONSE_SIZE, "Handler execution failed: Fatal signal detected.\n");
         res->status = HTTP_500_INTERNAL_SERVER_ERROR;

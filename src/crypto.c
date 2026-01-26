@@ -1,30 +1,10 @@
 #include <crypto.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 
-static struct crypto_config {
-    const char* certificate;
-    const char* private_key;
-} config = {
-    .certificate = "server.crt",
-    .private_key = "server.key"
-};
-
-__attribute__((used)) SSL_CTX *ssl_ctx; // Global SSL context
-
-static int sign_token(const char *token, char *signed_token, unsigned int signed_token_len);
-static int verify_token(const char *signed_token, char *token, size_t token_len);
-
-static struct crypto_ops crypto_ops = {
-    .sign_token = sign_token,
-    .verify_token = verify_token
-};
-
-static struct crypto crypto = {
-    .status = CRYPTO_FAILURE,
-    .ops = &crypto_ops,
-    .ctx = NULL
-};
-struct crypto* crypto_module = &crypto;
+static int sign_token(struct crypto *crypto, const char *token, char *signed_token, unsigned int signed_token_len);
+static int verify_token(struct crypto *crypto, const char *signed_token, const char *token, size_t token_len);
 
 static char* base64_encode(const unsigned char *input, int length) {
     BIO *bmem, *b64;
@@ -39,6 +19,10 @@ static char* base64_encode(const unsigned char *input, int length) {
     BIO_get_mem_ptr(b64, &bptr);
 
     buff = (char *)malloc(bptr->length + 1);
+    if (!buff) {
+        BIO_free_all(b64);
+        return NULL;
+    }
     memcpy(buff, bptr->data, bptr->length);
     buff[bptr->length] = '\0';
 
@@ -48,21 +32,25 @@ static char* base64_encode(const unsigned char *input, int length) {
 
 static unsigned char* base64_decode(const char *input, int *length) {
     BIO *b64, *bmem;
-    unsigned char *buffer = (unsigned char *)malloc(strlen(input));
-    memset(buffer, 0, strlen(input));
+    size_t input_len = strlen(input);
+    unsigned char *buffer = (unsigned char *)malloc(input_len);
+    if (!buffer) {
+        return NULL;
+    }
+    memset(buffer, 0, input_len);
 
     b64 = BIO_new(BIO_f_base64());
     bmem = BIO_new_mem_buf(input, -1);
     bmem = BIO_push(b64, bmem);
 
-    *length = BIO_read(bmem, buffer, strlen(input));
+    *length = BIO_read(bmem, buffer, (int)input_len);
     BIO_free_all(bmem);
 
     return buffer;
 }
 
-static int sign_token(const char *token, char *signed_token, unsigned int signed_token_len) {
-    if (crypto.status != CRYPTO_LOADED) {
+static int sign_token(struct crypto *crypto, const char *token, char *signed_token, unsigned int signed_token_len) {
+    if (!crypto || crypto->status != CRYPTO_LOADED) {
         fprintf(stderr, "[ERROR] Crypto module is not loaded\n");
         return -1;
     }
@@ -73,7 +61,7 @@ static int sign_token(const char *token, char *signed_token, unsigned int signed
     unsigned char *signature = NULL;
     unsigned int actual_signed_len = 0;
 
-    key_file = fopen(config.private_key, "r");
+    key_file = fopen(crypto->private_key, "r");
     if (!key_file) {
         perror("[ERROR] Unable to open private key file");
         return -1;
@@ -94,7 +82,7 @@ static int sign_token(const char *token, char *signed_token, unsigned int signed
         return -1;
     }
 
-    signature = (unsigned char *)malloc(EVP_PKEY_size(pkey));
+    signature = (unsigned char *)malloc((size_t)EVP_PKEY_size(pkey));
     if (!signature) {
         fprintf(stderr, "[ERROR] Failed to allocate signature buffer\n");
         EVP_MD_CTX_free(mdctx);
@@ -113,7 +101,15 @@ static int sign_token(const char *token, char *signed_token, unsigned int signed
         return -1;
     }
 
-    char *encoded_signature = base64_encode(signature, actual_signed_len);
+    char *encoded_signature = base64_encode(signature, (int)actual_signed_len);
+    if (!encoded_signature) {
+        fprintf(stderr, "[ERROR] Failed to encode signature\n");
+        free(signature);
+        EVP_MD_CTX_free(mdctx);
+        EVP_PKEY_free(pkey);
+        return -1;
+    }
+
     if (strlen(encoded_signature) >= signed_token_len) {
         fprintf(stderr, "[ERROR] Signed token buffer too small\n");
         free(encoded_signature);
@@ -129,11 +125,11 @@ static int sign_token(const char *token, char *signed_token, unsigned int signed
     EVP_MD_CTX_free(mdctx);
     EVP_PKEY_free(pkey);
 
-    return strlen(signed_token); // Return the length of the Base64 encoded signature
+    return (int)strlen(signed_token);
 }
 
-static int verify_token(const char *signed_token, char *token, size_t token_len) {
-    if (crypto.status != CRYPTO_LOADED) {
+static int verify_token(struct crypto *crypto, const char *signed_token, const char *token, size_t token_len) {
+    if (!crypto || crypto->status != CRYPTO_LOADED) {
         fprintf(stderr, "[ERROR] Crypto module is not loaded\n");
         return -1;
     }
@@ -145,7 +141,7 @@ static int verify_token(const char *signed_token, char *token, size_t token_len)
     unsigned char *decoded_signature = NULL;
     int decoded_len = 0;
 
-    cert_file = fopen(config.certificate, "r");
+    cert_file = fopen(crypto->certificate, "r");
     if (!cert_file) {
         perror("[ERROR] Unable to open certificate file");
         return -1;
@@ -204,56 +200,46 @@ static int verify_token(const char *signed_token, char *token, size_t token_len)
         return -1;
     }
 
-    return 0; // Verification succeeded
+    return 0;
 }
 
-static SSL_CTX* initialize_ssl_context() {
+static SSL_CTX* initialize_ssl_context(const char *certificate, const char *private_key) {
     const SSL_METHOD *method = TLS_server_method();
     SSL_CTX *ctx = SSL_CTX_new(method);
     if (!ctx) {
         perror("[ERROR] Failed to initialize SSL context");
         ERR_print_errors_fp(stderr);
-
-#ifdef PRODUCTION
-        exit(EXIT_FAILURE);
-#else
         return NULL;
-#endif
     }
 
-    if (SSL_CTX_use_certificate_file(ctx, config.certificate, SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_certificate_file(ctx, certificate, SSL_FILETYPE_PEM) <= 0) {
         perror("[ERROR] Failed to load server certificate");
         ERR_print_errors_fp(stderr);
-#ifdef PRODUCTION
-        exit(EXIT_FAILURE);
-#else
+        SSL_CTX_free(ctx);
         return NULL;
-#endif 
     }
 
-    if (SSL_CTX_use_PrivateKey_file(ctx, config.private_key , SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_PrivateKey_file(ctx, private_key, SSL_FILETYPE_PEM) <= 0) {
         perror("[ERROR] Failed to load server private key");
         ERR_print_errors_fp(stderr);
-#ifdef PRODUCTION
-        exit(EXIT_FAILURE);
-#else
+        SSL_CTX_free(ctx);
         return NULL;
-#endif 
     }
 
     if (!SSL_CTX_check_private_key(ctx)) {
         fprintf(stderr, "[ERROR] Private key does not match the certificate\n");
-#ifdef PRODUCTION
-        exit(EXIT_FAILURE);
-#else
+        SSL_CTX_free(ctx);
         return NULL;
-#endif 
     }
 
     return ctx;
 }
 
-__attribute__((constructor)) int crypto_init() {
+int crypto_init(struct crypto *crypto, const char *certificate, const char *private_key) {
+    if (!crypto) {
+        return -1;
+    }
+
     if (OPENSSL_init_crypto(OPENSSL_INIT_NO_ATEXIT, NULL) == 0) {
         fprintf(stderr, "[ERROR] Failed to initialize OpenSSL\n");
         return -1;
@@ -263,36 +249,30 @@ __attribute__((constructor)) int crypto_init() {
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();
 
-    ssl_ctx = initialize_ssl_context();
-    if (!ssl_ctx) {
-        return -1;
-    }
-    crypto.status = CRYPTO_LOADED;
+    crypto->certificate = certificate ? certificate : "server.crt";
+    crypto->private_key = private_key ? private_key : "server.key";
 
-    char* test_token = "test_token";
-    char signed_token[512];
-    unsigned int signed_token_len = sizeof(signed_token);
-
-    int sign_result = sign_token(test_token, signed_token, signed_token_len);
-    if (sign_result <= 0) {
-        fprintf(stderr, "[ERROR] Test signing failed\n");
+    crypto->ctx = initialize_ssl_context(crypto->certificate, crypto->private_key);
+    if (!crypto->ctx) {
+        crypto->status = CRYPTO_FAILURE;
         return -1;
     }
 
-    printf("[DEBUG] Signed token: %s\n", signed_token);
+    crypto->ops.sign_token = sign_token;
+    crypto->ops.verify_token = verify_token;
+    crypto->status = CRYPTO_LOADED;
 
-    int verify_result = verify_token(signed_token, test_token, strlen(test_token));
-    if (verify_result < 0) {
-        fprintf(stderr, "[ERROR] Test verification failed\n");
-        return -1;
-    }
-
-    printf("[CRYPTO] Crypto module loaded\n");
     return 0;
 }
 
-__attribute__((destructor)) void crypto_cleanup() {
-    SSL_CTX_free(ssl_ctx);
+void crypto_shutdown(struct crypto *crypto) {
+    if (!crypto) {
+        return;
+    }
+
+    SSL_CTX_free(crypto->ctx);
+    crypto->ctx = NULL;
+    crypto->status = CRYPTO_FAILURE;
     CRYPTO_cleanup_all_ex_data();
     ERR_free_strings();
     EVP_cleanup();

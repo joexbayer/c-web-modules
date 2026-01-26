@@ -1,8 +1,10 @@
 #include <cweb.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <crypto.h>
 #include <openssl/crypto.h>
+#include <openssl/sha.h>
 #include <openssl/hmac.h>
 
 static const char* username = "admin";
@@ -76,7 +78,7 @@ static int verify_signed_cookie(const char* cookie) {
     return strcmp(received_hmac, expected_hmac) == 0;
 }
 
-static int login_page(struct http_request *req, struct http_response *res) {
+static int login_page(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     const char* redirect_url = http_kv_get(req->params, "redirect");
     if (!redirect_url) {
         redirect_url = "/";
@@ -103,7 +105,7 @@ static int login_page(struct http_request *req, struct http_response *res) {
     return 0;
 }
 
-static int secret(struct http_request *req, struct http_response *res) {
+static int secret(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     if (req->data == NULL) {
         res->status = HTTP_400_BAD_REQUEST;
         return 0;
@@ -123,7 +125,7 @@ static int secret(struct http_request *req, struct http_response *res) {
         res->status = HTTP_302_FOUND;
         char location[HTTP_RESPONSE_SIZE];
         snprintf(location, sizeof(location), "/login?redirect=/secret");
-        http_kv_insert(res->headers, "Location", location);
+        http_kv_insert(res->headers, "Location", strdup(location));
         return 0;
     }
 
@@ -140,7 +142,7 @@ static int secret(struct http_request *req, struct http_response *res) {
     return 0;
 }
 
-static int authenticate(struct http_request *req, struct http_response *res) {
+static int authenticate(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     if (req->data == NULL) {
         res->status = HTTP_400_BAD_REQUEST;
         return 0;
@@ -171,16 +173,15 @@ static int authenticate(struct http_request *req, struct http_response *res) {
     char* cookie_with_name = malloc(strlen(cookie_name) + strlen(cookie) + 1);
     sprintf(cookie_with_name, "%s%s", cookie_name, cookie);
     http_kv_insert(res->headers, "Set-Cookie", cookie_with_name);
-    free(cookie_with_name);
     free(cookie);
 
     res->status = HTTP_302_FOUND;
-    http_kv_insert(res->headers, "Location", redirect_url);
+    http_kv_insert(res->headers, "Location", strdup(redirect_url));
 
     return 1;
 }
 
-static void onload() {
+static void onload(struct cweb_context *ctx) {
     hashed_password = hash_password(password);
 }
 
@@ -194,4 +195,5 @@ export module_t config = {
         {"/secret", "GET", secret, NONE},
     },
     .size = 3,
+    .onload = onload,
 };

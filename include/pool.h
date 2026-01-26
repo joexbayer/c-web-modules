@@ -8,25 +8,22 @@
 #include <unistd.h>
 #include <stdatomic.h>
 
-/* Task structure */
 struct task {
     void (*function)(void *);
     void *arg;
     struct task *next;
 };
 
-/* Thread pool structure */
 struct thread_pool {
     pthread_mutex_t lock;
     pthread_cond_t cond;
     pthread_t *threads;
-    int *thread_active;
     struct task *task_queue;
-    atomic_int num_threads;
+    struct task *task_tail;
     int max_threads;
     int queue_length;
-    volatile atomic_int stop;
-    atomic_int active_threads; /* Number of threads actively processing */
+    atomic_int stop;
+    atomic_int active_threads;
 };
 
 struct thread_pool *thread_pool_init(int num_threads);

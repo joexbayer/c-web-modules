@@ -49,7 +49,7 @@ static void render_todo_list(char *buffer, size_t buffer_size) {
 }
 
 /* Route: / - Method GET */
-int index_route(struct http_request *req, struct http_response *res) {
+int index_route(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     char content[2048];
     char rendered_page[4096];
 
@@ -57,15 +57,15 @@ int index_route(struct http_request *req, struct http_response *res) {
     snprintf(rendered_page, sizeof(rendered_page), home_template, head, content);
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", rendered_page);
     
-    http_kv_insert(res->headers, "Content-Type", "text/html");
-    http_kv_insert(res->headers, "x-custom-header", "Hello, World!");
+    http_kv_insert(res->headers, "Content-Type", strdup("text/html"));
+    http_kv_insert(res->headers, "x-custom-header", strdup("Hello, World!"));
 
     res->status = HTTP_200_OK;
     return 0;
 }
 
 /* Route: /add - Method POST */
-int add_todo_route(struct http_request *req, struct http_response *res) {
+int add_todo_route(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     if (list_count >= MAX_ITEMS) {
         snprintf(res->body, HTTP_RESPONSE_SIZE, "TODO list is full.");
         res->status = HTTP_400_BAD_REQUEST;
@@ -78,11 +78,11 @@ int add_todo_route(struct http_request *req, struct http_response *res) {
     }
 
     res->status = HTTP_302_FOUND;
-    http_kv_insert(res->headers, "Location", "/");
+    http_kv_insert(res->headers, "Location", strdup("/"));
     return 0;
 }
 
-void unload() {
+void unload(struct cweb_context *ctx) {
     for (int i = 0; i < list_count; i++) {
         free((void*)list[i]);
     }

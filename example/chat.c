@@ -7,12 +7,12 @@
 #define MAX_USERS 100
 
 /* User Management */
-static struct websocket *users[MAX_USERS];
+static websocket_t *users[MAX_USERS];
 static int user_count = 0;
 static pthread_mutex_t user_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Add a WebSocket to the user list */
-static void add_user(struct websocket *ws) {
+static void add_user(websocket_t *ws) {
     pthread_mutex_lock(&user_mutex);
     if (user_count < MAX_USERS) {
         users[user_count++] = ws;
@@ -23,7 +23,7 @@ static void add_user(struct websocket *ws) {
 }
 
 /* Remove a WebSocket from the user list */
-static void remove_user(struct websocket *ws) {
+static void remove_user(websocket_t *ws) {
     pthread_mutex_lock(&user_mutex);
     for (int i = 0; i < user_count; i++) {
         if (users[i] == ws) {
@@ -44,14 +44,14 @@ static void broadcast_message(const char *message, size_t length) {
 }
 
 /* WebSocket Handlers */
-static void on_open(struct websocket *ws) {
+static void on_open(struct cweb_context *ctx, websocket_t *ws) {
     printf("WebSocket opened\n");
     add_user(ws);
     const char *welcome = "A new user has joined the chat!";
     broadcast_message(welcome, strlen(welcome));
 }
 
-static void on_message(struct websocket *ws, const char *message, size_t length) {
+static void on_message(struct cweb_context *ctx, websocket_t *ws, const char *message, size_t length) {
     printf("Message received: %.*s\n", (int)length, message);
 
     /* Create a broadcast message */
@@ -60,7 +60,7 @@ static void on_message(struct websocket *ws, const char *message, size_t length)
     broadcast_message(response, strlen(response));
 }
 
-static void on_close(struct websocket *ws) {
+static void on_close(struct cweb_context *ctx, websocket_t *ws) {
     printf("WebSocket closed\n");
     remove_user(ws);
     const char *goodbye = "A user has left the chat.";
@@ -68,7 +68,7 @@ static void on_close(struct websocket *ws) {
 }
 
 /* Serve the chat HTML page */
-int chat_page(struct http_request *req, struct http_response *res) {
+int chat_page(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     const char *html = 
         "<!DOCTYPE html>"
         "<html>"
@@ -93,7 +93,7 @@ int chat_page(struct http_request *req, struct http_response *res) {
         "</html>";
 
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", html);
-    http_kv_insert(res->headers, "Content-Type", "text/html");
+    http_kv_insert(res->headers, "Content-Type", strdup("text/html"));
     res->status = HTTP_200_OK;
     return 0;
 }

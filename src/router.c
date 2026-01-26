@@ -1,56 +1,38 @@
 #include "http.h"
 #include "cweb.h"
 #include "router.h"
+#include "ws.h"
 #include <dlfcn.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <container.h>
 #include <regex.h>
 #include <jansson.h>
+#include <string.h>
+#include <openssl/sha.h>
+#include <stdlib.h>
 
 #define MODULE_TAG "config"
 #define ROUTE_FILE "modules/routes.dat"
 
-/* Routes depends on this function from ws */
-void ws_force_close(struct ws_info *info);
-int ws_update_container(const char* path, struct ws_info *info);
+static int router_save_to_disk(struct router *router, const char* filename);
+static int router_load_from_disk(struct router *router, const char* filename, struct cweb_context *ctx);
 
-struct route_disk_header {
-    char magic[5];
-    int count;
-};
-pthread_mutex_t save_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-struct gateway {
-    struct gateway_entry entries[100];
-    pthread_rwlock_t rwlock;
-    int count;
-} gateway = {
-    .rwlock = PTHREAD_RWLOCK_INITIALIZER,
-    .count = 0
-};
-
-static int route_save_to_disk(char* filename);
-static int route_load_from_disk(char* filename);
-
-static struct gateway_entry* find_gateway_entry(const char* module) {
-    for (int i = 0; i < gateway.count; i++) {
-        if (strcmp(gateway.entries[i].module->name, module) == 0) {
-            return &gateway.entries[i];
+static struct gateway_entry* find_gateway_entry(struct router *router, const char* module) {
+    for (int i = 0; i < router->count; i++) {
+        if (strcmp(router->entries[i].module->name, module) == 0) {
+            return &router->entries[i];
         }
     }
     return NULL;
 }
 
-/* Resolve symbol from shared object */
-void* resolv(const char* module, const char* symbol) {
-    /* Find module */
-    struct gateway_entry* entry = find_gateway_entry(module);
+void* router_resolve(struct router *router, const char* module, const char* symbol) {
+    struct gateway_entry* entry = find_gateway_entry(router, module);
     if (!entry) {
         return NULL;
     }
 
-    /* Find symbol */
     void* sym = dlsym(entry->handle, symbol);
     if (!sym) {
         fprintf(stderr, "Error resolving symbol: %s\n", dlerror());
@@ -60,35 +42,34 @@ void* resolv(const char* module, const char* symbol) {
     return sym;
 }
 
-int route_gateway_json(struct http_response* res){
+int router_gateway_json(struct router *router, http_response_t* res) {
     json_t *root = json_object();
     json_t *modules = json_array();
 
-    for (int i = 0; i < gateway.count; i++) {
+    for (int i = 0; i < router->count; i++) {
         json_t *module = json_object();
-        json_object_set_new(module, "name", json_string(gateway.entries[i].module->name));
-        json_object_set_new(module, "author", json_string(gateway.entries[i].module->author));
-        json_object_set_new(module, "path", json_string(gateway.entries[i].so_path));
+        json_object_set_new(module, "name", json_string(router->entries[i].module->name));
+        json_object_set_new(module, "author", json_string(router->entries[i].module->author));
+        json_object_set_new(module, "path", json_string(router->entries[i].so_path));
 
         json_t *routes = json_array();
-        for (int j = 0; j < gateway.entries[i].module->size; j++) {
+        for (int j = 0; j < router->entries[i].module->size; j++) {
             json_t *route = json_object();
-            json_object_set_new(route, "method", json_string(gateway.entries[i].module->routes[j].method));
-            json_object_set_new(route, "path", json_string(gateway.entries[i].module->routes[j].path));
+            json_object_set_new(route, "method", json_string(router->entries[i].module->routes[j].method));
+            json_object_set_new(route, "path", json_string(router->entries[i].module->routes[j].path));
             json_array_append_new(routes, route);
         }
         json_object_set_new(module, "routes", routes);
 
-         
         json_t *websockets = json_array();
-        for (int j = 0; j < gateway.entries[i].module->ws_size; j++) {
+        for (int j = 0; j < router->entries[i].module->ws_size; j++) {
             json_t *ws_route = json_object();
-            json_object_set_new(ws_route, "path", json_string(gateway.entries[i].module->websockets[j].path));
+            json_object_set_new(ws_route, "path", json_string(router->entries[i].module->websockets[j].path));
             json_array_append_new(websockets, ws_route);
         }
-        
+
         json_object_set_new(module, "websockets", websockets);
-        
+
         json_array_append_new(modules, module);
     }
 
@@ -96,119 +77,145 @@ int route_gateway_json(struct http_response* res){
     char *json_str = json_dumps(root, JSON_INDENT(2));
     json_decref(root);
 
-    http_kv_insert(res->headers, "Content-Type", "application/json");
-    http_kv_insert(res->headers, "Access-Control-Allow-Origin", "*");
+    http_kv_insert(res->headers, "Content-Type", strdup("application/json"));
+    http_kv_insert(res->headers, "Access-Control-Allow-Origin", strdup("*"));
+    if (res->body) {
+        free(res->body);
+    }
     res->body = json_str;
-    res->content_length = strlen(json_str);
+    res->content_length = (int)strlen(json_str);
     res->status = HTTP_200_OK;
 
     return 0;
 }
 
-/* Find route with regex pattern matching included. */
-struct route route_find(char *route, char *method) {
-    pthread_rwlock_rdlock(&gateway.rwlock);
-    for (int i = 0; i < gateway.count; i++) {
-        pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
-        for (int j = 0; j < gateway.entries[i].module->size; j++) {
-            struct route_info *entry = &gateway.entries[i].module->routes[j];
+static int router_compile_routes(module_t *module) {
+    for (int i = 0; i < module->size; i++) {
+        struct route_info *entry = &module->routes[i];
+        if (!entry->path || !entry->method) {
+            continue;
+        }
+
+        if (entry->regex_compiled) {
+            regfree(&entry->regex);
+            entry->regex_compiled = 0;
+        }
+
+        char anchored_pattern[1024];
+        snprintf(anchored_pattern, sizeof(anchored_pattern), "^%s$", entry->path);
+        if (regcomp(&entry->regex, anchored_pattern, REG_EXTENDED | REG_NOSUB) != 0) {
+            fprintf(stderr, "Invalid regex pattern: %s\n", anchored_pattern);
+            return -1;
+        }
+        entry->regex_compiled = 1;
+    }
+    return 0;
+}
+
+static void router_release_routes(module_t *module) {
+    for (int i = 0; i < module->size; i++) {
+        struct route_info *entry = &module->routes[i];
+        if (entry->regex_compiled) {
+            regfree(&entry->regex);
+            entry->regex_compiled = 0;
+        }
+    }
+}
+
+struct route router_find(struct router *router, const char *route, const char *method) {
+    pthread_rwlock_rdlock(&router->rwlock);
+    for (int i = 0; i < router->count; i++) {
+        pthread_rwlock_rdlock(&router->entries[i].rwlock);
+        for (int j = 0; j < router->entries[i].module->size; j++) {
+            struct route_info *entry = &router->entries[i].module->routes[j];
             if (entry->path == NULL || entry->method == NULL) {
                 continue;
             }
 
-            /* Check if method and path matches */
             if (strcmp(method, entry->method) == 0) {
-                regex_t regex;
-                char anchored_pattern[1024];
-
-                /* Create an anchored regex pattern, else partial paths will be matched... */
-                snprintf(anchored_pattern, sizeof(anchored_pattern), "^%s$", entry->path);
-                if (regcomp(&regex, anchored_pattern, REG_EXTENDED | REG_NOSUB) != 0) {
-                    fprintf(stderr, "Invalid regex pattern: %s\n", anchored_pattern);
-                    continue;
+                if (!entry->regex_compiled) {
+                    pthread_rwlock_unlock(&router->entries[i].rwlock);
+                    pthread_rwlock_unlock(&router->rwlock);
+                    return (struct route){0};
                 }
 
-                int match = regexec(&regex, route, 0, NULL, 0);
-                regfree(&regex);
-                if (match == 0) {
-                    pthread_rwlock_unlock(&gateway.rwlock);
-                    /* Caller is responsible for unlocking the route read lock! */
+                if (regexec(&entry->regex, route, 0, NULL, 0) == 0) {
+                    pthread_rwlock_unlock(&router->rwlock);
                     return (struct route){
                         .route = entry,
-                        .rwlock = &gateway.entries[i].rwlock
+                        .rwlock = &router->entries[i].rwlock
                     };
                 }
             }
         }
-        pthread_rwlock_unlock(&gateway.entries[i].rwlock);
+        pthread_rwlock_unlock(&router->entries[i].rwlock);
     }
-    pthread_rwlock_unlock(&gateway.rwlock);
+    pthread_rwlock_unlock(&router->rwlock);
     return (struct route){0};
 }
 
-struct ws_route ws_route_find(char *route) {
-    pthread_rwlock_rdlock(&gateway.rwlock);
-    for (int i = 0; i < gateway.count; i++) {
-        pthread_rwlock_rdlock(&gateway.entries[i].rwlock);
-        for (int j = 0; j < gateway.entries[i].module->ws_size; j++) {
-            if (strcmp(gateway.entries[i].module->websockets[j].path, route) == 0) {
-                /* Caller is responsible for unlocking the read lock! */
+struct ws_route router_ws_find(struct router *router, const char *route) {
+    pthread_rwlock_rdlock(&router->rwlock);
+    for (int i = 0; i < router->count; i++) {
+        pthread_rwlock_rdlock(&router->entries[i].rwlock);
+        for (int j = 0; j < router->entries[i].module->ws_size; j++) {
+            if (strcmp(router->entries[i].module->websockets[j].path, route) == 0) {
+                pthread_rwlock_unlock(&router->rwlock);
                 return (struct ws_route){
-                    .info = &gateway.entries[i].module->websockets[j],
-                    .rwlock = &gateway.entries[i].rwlock
+                    .info = &router->entries[i].module->websockets[j],
+                    .rwlock = &router->entries[i].rwlock
                 };
             }
         }
-        pthread_rwlock_unlock(&gateway.entries[i].rwlock);
+        pthread_rwlock_unlock(&router->entries[i].rwlock);
     }
-    pthread_rwlock_unlock(&gateway.rwlock);
+    pthread_rwlock_unlock(&router->rwlock);
     return (struct ws_route){0};
 }
 
-static int update_gateway_entry(int index, char* so_path, struct module* routes, void* handle) {
-    pthread_rwlock_wrlock(&gateway.entries[index].rwlock);
+static int update_gateway_entry(struct router *router, int index, const char* so_path, module_t* module, void* handle, struct cweb_context *ctx) {
+    pthread_rwlock_wrlock(&router->entries[index].rwlock);
 
-    void* old_handle = gateway.entries[index].handle;
+    void* old_handle = router->entries[index].handle;
 
-    /* Unload old module */
-    if (gateway.entries[index].module && gateway.entries[index].module->unload) {
-        gateway.entries[index].module->unload();
+    if (router->entries[index].module && router->entries[index].module->unload) {
+        router->entries[index].module->unload(ctx);
     }
 
-    /* Update entry */
-    gateway.entries[index].handle = handle;
-    gateway.entries[index].module = routes;
-
-    /* Update all websocket connections */
-    for(int i = 0; gateway.entries[index].module && i < gateway.entries[index].module->ws_size; i++) {
-        /**
-         * TODO: What if we do want to close the websocket connections?
-         * Currently the module has to do that itself on unload.
-         */
-        //ws_force_close(&gateway.entries[index].module->websockets[i]);
-        ws_update_container(gateway.entries[index].module->websockets[i].path, &gateway.entries[index].module->websockets[i]);
+    if (router->entries[index].module) {
+        router_release_routes(router->entries[index].module);
     }
 
-    /* Close old handle */
-    if (old_handle){
-        unlink(gateway.entries[index].so_path);
+    router->entries[index].handle = handle;
+    router->entries[index].module = module;
+
+    for (int i = 0; router->entries[index].module && i < router->entries[index].module->ws_size; i++) {
+        ws_update_container(router->ws, router->entries[index].module->websockets[i].path, &router->entries[index].module->websockets[i]);
+    }
+
+    if (old_handle) {
+        unlink(router->entries[index].so_path);
         dlclose(old_handle);
     }
-    
-    memset(gateway.entries[index].so_path, 0, SO_PATH_MAX_LEN);
-    strncpy(gateway.entries[index].so_path, so_path, SO_PATH_MAX_LEN); 
 
-    /* Load new module */
-    if (gateway.entries[index].module->onload) {
-        gateway.entries[index].module->onload();
+    memset(router->entries[index].so_path, 0, SO_PATH_MAX_LEN);
+    strncpy(router->entries[index].so_path, so_path, SO_PATH_MAX_LEN - 1);
+
+    if (router_compile_routes(module) != 0) {
+        pthread_rwlock_unlock(&router->entries[index].rwlock);
+        return -1;
     }
-    
-    pthread_rwlock_unlock(&gateway.entries[index].rwlock);
-    printf("[INFO   ] Module %s is updated.\n", routes->name);
+
+    if (router->entries[index].module->onload) {
+        router->entries[index].module->onload(ctx);
+    }
+
+    pthread_rwlock_unlock(&router->entries[index].rwlock);
+    printf("[INFO   ] Module %s is updated.\n", module->name);
     return 0;
 }
 
-static void* load_shared_object(char* so_path){
+static void* load_shared_object(const char* so_path) {
     void* handle = dlopen(so_path, RTLD_LAZY);
     if (!handle) {
         fprintf(stderr, "[ERROR] Error loading shared object: %s\n", dlerror());
@@ -217,175 +224,282 @@ static void* load_shared_object(char* so_path){
     return handle;
 }
 
-static int load_from_shared_object(char* so_path){
+static int load_from_shared_object(struct router *router, const char* so_path, struct cweb_context *ctx) {
     void* handle = load_shared_object(so_path);
     if (!handle) {
         return -1;
     }
 
-    struct module* module = dlsym(handle, MODULE_TAG);
+    module_t* module = dlsym(handle, MODULE_TAG);
     if (!module || strnlen(module->name, 128) == 0) {
         fprintf(stderr, "[ERROR] Error finding module definition: %s\n", dlerror());
         dlclose(handle);
         return -1;
     }
 
-    /* Check if gateway is full */
-    if (gateway.count >= 100) {
+    if (router->count >= ROUTER_MAX_MODULES) {
         fprintf(stderr, "[ERROR] Gateway is full\n");
         dlclose(handle);
         return -1;
     }
 
-    pthread_rwlock_rdlock(&gateway.rwlock);
+    pthread_rwlock_rdlock(&router->rwlock);
 
-    /* Check if module already exists */
-    for (int i = 0; i < gateway.count; i++) {
-        if (strcmp(gateway.entries[i].module->name, module->name) == 0) {
-            /* Update existing entry, if so_path differ */
-            if(strcmp(gateway.entries[i].so_path, so_path) == 0) {
+    for (int i = 0; i < router->count; i++) {
+        if (strcmp(router->entries[i].module->name, module->name) == 0) {
+            if (strcmp(router->entries[i].so_path, so_path) == 0) {
+                pthread_rwlock_unlock(&router->rwlock);
                 return 0;
             }
-            int ret = update_gateway_entry(i, so_path, module, handle);
+            int ret = update_gateway_entry(router, i, so_path, module, handle, ctx);
 
-            pthread_rwlock_unlock(&gateway.rwlock);
+            pthread_rwlock_unlock(&router->rwlock);
             return ret;
         }
     }
 
     printf("[INFO   ] Module %s is loaded.\n", module->name);
 
-    /* Only handle route conflicts on new modules */
+    if (router_compile_routes(module) != 0) {
+        pthread_rwlock_unlock(&router->rwlock);
+        dlclose(handle);
+        return -1;
+    }
+
     for (int i = 0; i < module->size; i++) {
-        struct route route = route_find((char*)module->routes[i].path, (char*)module->routes[i].method);
-        if (route.route) {
-            pthread_rwlock_unlock(route.rwlock);
-            pthread_rwlock_unlock(&gateway.rwlock);
-            fprintf(stderr, "[ERROR] Route conflict: %s %s - \n", module->routes[i].method, module->routes[i].path);
-            dlclose(handle);
-            return -1;
+        struct route_info *new_route = &module->routes[i];
+        if (!new_route->path || !new_route->method) {
+            continue;
+        }
+
+        for (int j = 0; j < router->count; j++) {
+            pthread_rwlock_rdlock(&router->entries[j].rwlock);
+            for (int k = 0; k < router->entries[j].module->size; k++) {
+                struct route_info *existing = &router->entries[j].module->routes[k];
+                if (!existing->path || !existing->method || !existing->regex_compiled) {
+                    continue;
+                }
+
+                if (strcmp(existing->method, new_route->method) == 0 &&
+                    regexec(&existing->regex, new_route->path, 0, NULL, 0) == 0) {
+                    pthread_rwlock_unlock(&router->entries[j].rwlock);
+                    pthread_rwlock_unlock(&router->rwlock);
+                    fprintf(stderr, "[ERROR] Route conflict: %s %s\n", new_route->method, new_route->path);
+                    router_release_routes(module);
+                    dlclose(handle);
+                    return -1;
+                }
+            }
+            pthread_rwlock_unlock(&router->entries[j].rwlock);
         }
     }
 
-    pthread_rwlock_init(&gateway.entries[gateway.count].rwlock, NULL);
-    update_gateway_entry(gateway.count, so_path, module, handle);
-    gateway.count++;
+    pthread_rwlock_init(&router->entries[router->count].rwlock, NULL);
+    update_gateway_entry(router, router->count, so_path, module, handle, ctx);
+    router->count++;
 
-    pthread_rwlock_unlock(&gateway.rwlock);
+    pthread_rwlock_unlock(&router->rwlock);
 
     return 0;
 }
 
-int route_register_module(char* so_path) {
-    return load_from_shared_object(so_path);
+int router_register_module(struct router *router, struct cweb_context *ctx, const char* so_path) {
+    return load_from_shared_object(router, so_path, ctx);
 }
 
-void route_cleanup() {
-    for (int i = 0; i < gateway.count; i++) {
-        pthread_rwlock_wrlock(&gateway.entries[i].rwlock);
-        dlclose(gateway.entries[i].handle);
-        pthread_rwlock_unlock(&gateway.entries[i].rwlock);
-        pthread_rwlock_destroy(&gateway.entries[i].rwlock);
+static void router_cleanup(struct router *router, struct cweb_context *ctx) {
+    for (int i = 0; i < router->count; i++) {
+        pthread_rwlock_wrlock(&router->entries[i].rwlock);
+        if (router->entries[i].module && router->entries[i].module->unload) {
+            router->entries[i].module->unload(ctx);
+        }
+        if (router->entries[i].module) {
+            router_release_routes(router->entries[i].module);
+        }
+        dlclose(router->entries[i].handle);
+        pthread_rwlock_unlock(&router->entries[i].rwlock);
+        pthread_rwlock_destroy(&router->entries[i].rwlock);
     }
-    
 }
 
-static int route_save_to_disk(char* filename) {
+static int router_save_to_disk(struct router *router, const char* filename) {
     int ret;
-    pthread_mutex_lock(&save_mutex);
+    pthread_mutex_lock(&router->save_mutex);
 
     FILE *fp = fopen(filename, "wb");
     if (fp == NULL) {
         perror("Error creating route file");
-        pthread_mutex_unlock(&save_mutex);
+        pthread_mutex_unlock(&router->save_mutex);
         return -1;
     }
 
-    struct route_disk_header header = {
+    struct {
+        char magic[5];
+        int count;
+    } header = {
         .magic = "CWEB",
-        .count = gateway.count
+        .count = router->count
     };
-    ret = fwrite(&header, sizeof(struct route_disk_header), 1, fp);
-    if(ret != 1) {
+
+    ret = (int)fwrite(&header, sizeof(header), 1, fp);
+    if (ret != 1) {
         fprintf(stderr, "Error writing route file header\n");
         fclose(fp);
-        pthread_mutex_unlock(&save_mutex);
+        pthread_mutex_unlock(&router->save_mutex);
         return -1;
     }
 
-    for (int i = 0; i < gateway.count; i++) {
-        ret = fwrite(gateway.entries[i].so_path, SO_PATH_MAX_LEN, 1, fp);
-        if(ret != 1) {
+    for (int i = 0; i < router->count; i++) {
+        ret = (int)fwrite(router->entries[i].so_path, SO_PATH_MAX_LEN, 1, fp);
+        if (ret != 1) {
             fprintf(stderr, "Error writing route file entry\n");
             fclose(fp);
-            pthread_mutex_unlock(&save_mutex);
+            pthread_mutex_unlock(&router->save_mutex);
             return -1;
         }
     }
 
     fclose(fp);
-    pthread_mutex_unlock(&save_mutex);
+    pthread_mutex_unlock(&router->save_mutex);
     return 0;
 }
 
-static int route_load_from_disk(char* filename) {
+static int router_load_from_disk(struct router *router, const char* filename, struct cweb_context *ctx) {
     int ret;
-    pthread_mutex_lock(&save_mutex);
+    pthread_mutex_lock(&router->save_mutex);
     FILE *fp = fopen(filename, "rb");
     if (fp == NULL) {
-        perror("Error opening route file");
-        pthread_mutex_unlock(&save_mutex);
+        pthread_mutex_unlock(&router->save_mutex);
         return -1;
     }
 
-    struct route_disk_header header;
-    ret = fread(&header, sizeof(struct route_disk_header), 1, fp);
-    if(ret != 1) {
+    struct {
+        char magic[5];
+        int count;
+    } header;
+
+    ret = (int)fread(&header, sizeof(header), 1, fp);
+    if (ret != 1) {
         fprintf(stderr, "Error reading route file header\n");
         fclose(fp);
-        pthread_mutex_unlock(&save_mutex);
+        pthread_mutex_unlock(&router->save_mutex);
         return -1;
     }
 
-    if(strcmp(header.magic, "CWEB") != 0) {
+    if (strcmp(header.magic, "CWEB") != 0) {
         fprintf(stderr, "Invalid route file\n");
         fclose(fp);
+        pthread_mutex_unlock(&router->save_mutex);
         return -1;
     }
 
     for (int i = 0; i < header.count; i++) {
         char so_path[SO_PATH_MAX_LEN];
-        ret = fread(so_path, SO_PATH_MAX_LEN, 1, fp);
-        if(ret != 1) {
+        ret = (int)fread(so_path, SO_PATH_MAX_LEN, 1, fp);
+        if (ret != 1) {
             fprintf(stderr, "Error reading route file entry\n");
             fclose(fp);
-            pthread_mutex_unlock(&save_mutex);
+            pthread_mutex_unlock(&router->save_mutex);
             return -1;
         }
 
-        route_register_module(so_path);
+        router_register_module(router, ctx, so_path);
     }
 
     fclose(fp);
-    pthread_mutex_unlock(&save_mutex);
+    pthread_mutex_unlock(&router->save_mutex);
     return 0;
 }
 
-__attribute__((constructor)) void route_init() {
-    /* Load libmap.so dependency - Only needed for Linux, perhaps wrap in #ifdef */
-    void *map_handle = dlopen("./libs/libmodule.so", RTLD_GLOBAL | RTLD_LAZY);
-    if (!map_handle) {
-        fprintf(stderr, "Error loading dependency libmap: %s\n", dlerror());
+int router_init(struct router *router, struct ws_server *ws, const char *route_file, struct cweb_context *ctx) {
+    if (!router) {
+        return -1;
+    }
+
+    router->count = 0;
+    router->ws = ws;
+    router->route_file[0] = '\0';
+
+    if (route_file) {
+        strncpy(router->route_file, route_file, sizeof(router->route_file) - 1);
+    } else {
+        strncpy(router->route_file, ROUTE_FILE, sizeof(router->route_file) - 1);
+    }
+
+    pthread_rwlock_init(&router->rwlock, NULL);
+    pthread_mutex_init(&router->save_mutex, NULL);
+
+    void *module_handle = dlopen("./libs/libmodule.so", RTLD_GLOBAL | RTLD_LAZY);
+    if (!module_handle) {
+        fprintf(stderr, "Error loading dependency libmodule: %s\n", dlerror());
+    }
+
+    router_load_from_disk(router, router->route_file, ctx);
+    printf("[STARTUP] Router initialized\n");
+    return 0;
+}
+
+void router_shutdown(struct router *router, struct cweb_context *ctx) {
+    if (!router) {
         return;
     }
 
-    route_load_from_disk(ROUTE_FILE);
-
-    printf("[STARTUP] Router initialized\n");
+    router_save_to_disk(router, router->route_file);
+    router_cleanup(router, ctx);
+    pthread_mutex_destroy(&router->save_mutex);
+    pthread_rwlock_destroy(&router->rwlock);
+    printf("[SHUTDOWN] Router closed\n");
 }
 
-__attribute__((destructor)) void route_close() {
-    route_save_to_disk(ROUTE_FILE);
-    route_cleanup();
-    printf("[SHUTDOWN] Router closed\n");
+int router_mgnt_parse_request(struct router *router, struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
+    (void)ctx;
+    if (req->method == -1) {
+        return -1;
+    }
+
+    const char *code = http_kv_get(req->data, "code");
+    if (!code) {
+        fprintf(stderr, "[ERROR] Code is not provided.\n");
+        return -1;
+    }
+
+    extern int write_and_compile(const char *filename, const char *code, char *error_buffer, size_t buffer_size);
+
+    char* hash = NULL;
+    {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+        unsigned char hash_raw[SHA256_DIGEST_LENGTH];
+        SHA256_CTX sha256;
+        SHA256_Init(&sha256);
+        SHA256_Update(&sha256, code, strlen(code));
+        SHA256_Final(hash_raw, &sha256);
+#pragma GCC diagnostic pop
+
+        hash = (char*)calloc(65, sizeof(char));
+        if (!hash) {
+            fprintf(stderr, "[ERROR] Memory allocation failed for hash.\n");
+            return -1;
+        }
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+            sprintf(hash + (i * 2), "%02x", hash_raw[i]);
+        }
+        hash[64] = 0;
+    }
+
+    char filename[256];
+    snprintf(filename, sizeof(filename), "%s", hash);
+
+    if (write_and_compile(filename, code, res->body, HTTP_RESPONSE_SIZE) == -1) {
+        fprintf(stderr, "[ERROR] Failed to register '%s' due to compilation error.\n", filename);
+        free(hash);
+        return -1;
+    }
+
+    char so_path[SO_PATH_MAX_LEN + 12];
+    snprintf(so_path, sizeof(so_path), "modules/%s.so", filename);
+
+    free(hash);
+
+    return router_register_module(router, ctx, so_path);
 }

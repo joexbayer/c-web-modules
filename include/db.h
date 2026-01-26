@@ -5,8 +5,8 @@
 
 struct sqldb {
     sqlite3 *db;
-    int (*exec)(const char *, int (*)(void *, int, char **, char **), void *);
-    int (*prepare)(sqlite3 *, const char *, int, sqlite3_stmt **, const char **);
+    int (*exec)(struct sqldb *, const char *, int (*)(void *, int, char **, char **), void *);
+    int (*prepare)(struct sqldb *, const char *, int, sqlite3_stmt **, const char **);
     int (*step)(sqlite3_stmt *);
     int (*finalize)(sqlite3_stmt *);
     int (*bind_text)(sqlite3_stmt *, int, const char *, int, void (*)(void *));
@@ -15,11 +15,12 @@ struct sqldb {
     int (*column_int)(sqlite3_stmt *, int);
     int (*column_count)(sqlite3_stmt *);
     int (*reset)(sqlite3_stmt *);
-    int (*changes)(sqlite3 *);
-    int (*last_insert_rowid)(sqlite3 *);
+    int (*changes)(struct sqldb *);
+    int (*last_insert_rowid)(struct sqldb *);
     void (*free)(void *);
-
 };
-extern struct sqldb *exposed_sqldb;
+
+int sqldb_init(struct sqldb *db, const char *filename);
+void sqldb_shutdown(struct sqldb *db);
 
 #endif // DB_H

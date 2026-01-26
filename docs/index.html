@@ -256,7 +256,7 @@ static const char* template =
     "</html>\n";
 
 /* Route: /counter - Method GET */
-static int index_route(struct http_request *req, struct http_response *res) {
+static int index_route(http_request_t *req, http_response_t *res) {
     snprintf(res->body, HTTP_RESPONSE_SIZE, template, counter++);
     res->status = HTTP_200_OK;
     return 0;
@@ -308,15 +308,15 @@ make run</code></pre>
       <pre><code class="language-c">
 #include <cweb.h>
 
-void on_open(struct websocket *ws) {
+void on_open(websocket_t *ws) {
     printf("WebSocket connection opened\n");
 }
 
-void on_message(struct websocket *ws, const char *message, size_t length) {
+void on_message(websocket_t *ws, const char *message, size_t length) {
     printf("Message received: %.*s\n", (int)length, message);
 }
 
-void on_close(struct websocket *ws) {
+void on_close(websocket_t *ws) {
     printf("WebSocket connection closed\n");
 }
 
@@ -350,7 +350,7 @@ export module_t config = {
       <p>The following structs are central to the framework:</p>
       <h3>HTTP Request</h3>
       <pre><code class="language-c">
-struct http_request {
+http_request_t {
     http_method_t method; // HTTP method (e.g., GET, POST)
     char *path;           // Request path
     char *body;           // Request body
@@ -361,7 +361,7 @@ struct http_request {
       </code></pre>
       <h3>HTTP Response</h3>
       <pre><code class="language-c">
-struct http_response {
+http_response_t {
     http_error_t status;  // HTTP status code
     struct map *headers;  // Response headers
     char *body;           // Response body
@@ -369,10 +369,10 @@ struct http_response {
       </code></pre>
       <h3>WebSocket</h3>
       <pre><code class="language-c">
-struct websocket {
+websocket_t {
     int client_fd;  // Client file descriptor
-    int (*send)(struct websocket* ws, const char *message, size_t length);
-    int (*close)(struct websocket* ws);
+    int (*send)(websocket_t* ws, const char *message, size_t length);
+    int (*close)(websocket_t* ws);
 };
       </code></pre>
 

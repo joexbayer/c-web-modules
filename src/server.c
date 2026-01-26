@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,6 +5,8 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <time.h>
+#include <limits.h>
 
 #include <pthread.h>
 #include <sys/socket.h>
@@ -24,12 +25,15 @@
 #include "scheduler.h"
 #include "pool.h"
 #include "crypto.h"
+#include "engine.h"
+#include "ws.h"
+#include "container.h"
 
 #define DEFAULT_PORT 8080
 #define ACCEPT_BACKLOG 128
 #define MODULE_URL "/mgnt"
+#define REQUEST_BUFFER_SIZE (8 * 1024)
 
-/* Feature for later... */
 static const char* allowed_management_commands[] = {
     "reload",
     "shutdown",
@@ -45,74 +49,109 @@ static const char* allowed_ip_prefixes[] = {
     "172.16."
 };
 
-struct cidr_prefix {
-    uint32_t prefix; 
-    uint8_t prefix_len;
-};
-
 struct connection {
     int sockfd;
     struct sockaddr_in address;
     SSL *ssl;
 };
 
-static struct thread_pool *pool;
-
 typedef enum env {
     DEV,
     PROD
 } env_t;
 
-static struct server_config {
+struct server_config {
     uint16_t port;
     int thread_pool_size;
     char silent_mode;
     env_t environment;
-} config = {
-    .port = DEFAULT_PORT,
-    .thread_pool_size = 0,
-    .silent_mode = 0,
-#ifdef PRODUCTION
-    .environment = PROD
-#else
-    .environment = DEV
-#endif 
 };
 
-// static int parse_cidr(const char *cidr_str, struct cidr_prefix *result) {
-//     char ip[INET_ADDRSTRLEN];
-//     int prefix_len;
+struct server_state {
+    struct cweb_context ctx;
+    struct container cache;
+    struct scheduler scheduler;
+    struct sqldb database;
+    struct crypto crypto;
+    struct symbols symbols;
+    struct router router;
+    struct ws_server ws;
+    struct thread_pool *pool;
+    struct server_config config;
+};
 
-//     if (sscanf(cidr_str, "%15[^/]/%d", ip, &prefix_len) != 2) {
-//         fprintf(stderr, "Invalid CIDR format: %s\n", cidr_str);
-//         return -1;
-//     }
+struct client_task {
+    struct server_state *state;
+    struct connection *connection;
+};
 
-//     if (prefix_len < 0 || prefix_len > 32) {
-//         fprintf(stderr, "Invalid prefix length: %d\n", prefix_len);
-//         return -1;
-//     }
+static void* server_resolve(void *user_data, const char* module, const char* symbol) {
+    struct router *router = (struct router *)user_data;
+    return router_resolve(router, module, symbol);
+}
 
-//     struct in_addr addr;
-//     if (inet_pton(AF_INET, ip, &addr) != 1) {
-//         fprintf(stderr, "Invalid IP address: %s\n", ip);
-//         return -1;
-//     }
+static int server_init_services(struct server_state *state) {
+    if (container_init(&state->cache, 32) != 0) {
+        return -1;
+    }
 
-//     result->prefix = ntohl(addr.s_addr); // Convert to host byte order
-//     result->prefix_len = (uint8_t)prefix_len;
+    if (scheduler_init(&state->scheduler, 0) != 0) {
+        container_shutdown(&state->cache);
+        return -1;
+    }
 
-//     return 0;
-// }
+    if (sqldb_init(&state->database, "db.sqlite3") != 0) {
+        scheduler_shutdown(&state->scheduler);
+        container_shutdown(&state->cache);
+        return -1;
+    }
 
-/* TODO: Ugly fix to allow server access to these.. */
-void ws_handle_client(int sd, struct http_request *req, struct http_response *res, struct ws_info *ws_module_info);
-int ws_confirm_open(int sd);
+    int crypto_ok = crypto_init(&state->crypto, NULL, NULL);
+    if (crypto_ok != 0 && state->config.environment == PROD) {
+        sqldb_shutdown(&state->database);
+        scheduler_shutdown(&state->scheduler);
+        container_shutdown(&state->cache);
+        return -1;
+    }
 
-#ifdef PRODUCTION
-#endif
+    state->ctx.cache = &state->cache;
+    state->ctx.scheduler = &state->scheduler;
+    state->ctx.database = &state->database;
+    state->ctx.crypto = &state->crypto;
+    state->symbols.user_data = &state->router;
+    state->symbols.resolv = server_resolve;
+    state->ctx.symbols = &state->symbols;
 
-static struct connection server_init(uint16_t port) {
+    if (ws_init(&state->ws) != 0) {
+        crypto_shutdown(&state->crypto);
+        sqldb_shutdown(&state->database);
+        scheduler_shutdown(&state->scheduler);
+        container_shutdown(&state->cache);
+        return -1;
+    }
+
+    if (router_init(&state->router, &state->ws, NULL, &state->ctx) != 0) {
+        ws_shutdown(&state->ws, &state->ctx);
+        crypto_shutdown(&state->crypto);
+        sqldb_shutdown(&state->database);
+        scheduler_shutdown(&state->scheduler);
+        container_shutdown(&state->cache);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void server_shutdown_services(struct server_state *state) {
+    router_shutdown(&state->router, &state->ctx);
+    ws_shutdown(&state->ws, &state->ctx);
+    crypto_shutdown(&state->crypto);
+    sqldb_shutdown(&state->database);
+    scheduler_shutdown(&state->scheduler);
+    container_shutdown(&state->cache);
+}
+
+static struct connection server_init_socket(uint16_t port) {
     struct connection s;
     s.sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (s.sockfd == 0) {
@@ -121,7 +160,7 @@ static struct connection server_init(uint16_t port) {
     }
 
     int opt = 1;
-    if (setsockopt(s.sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    if (setsockopt(s.sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) != 0) {
         perror("setsockopt failed");
         close(s.sockfd);
         exit(EXIT_FAILURE);
@@ -148,25 +187,29 @@ static struct connection server_init(uint16_t port) {
 
 static struct connection* server_accept(struct connection s) {
     struct connection *c = (struct connection *)malloc(sizeof(struct connection));
-    memset(c, 0, sizeof(struct connection));
     if (c == NULL) {
         perror("Error allocating memory for client");
         close(s.sockfd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
-    int addrlen = sizeof(s.address);
-    c->sockfd = accept(s.sockfd, (struct sockaddr *)&s.address, (socklen_t *)&addrlen);
+    memset(c, 0, sizeof(struct connection));
+
+    struct sockaddr_in client_addr;
+    socklen_t addrlen = (socklen_t)sizeof(client_addr);
+    c->sockfd = accept(s.sockfd, (struct sockaddr *)&client_addr, &addrlen);
     if (c->sockfd < 0) {
         perror("Accept failed");
         free(c);
         return NULL;
     }
+    c->address = client_addr;
 
 #ifdef PRODUCTION
-    c->ssl = SSL_new(ssl_ctx);
+    c->ssl = SSL_new(state->crypto.ctx);
     if (!c->ssl) {
         perror("[ERROR] SSL initialization failed");
+        close(c->sockfd);
         free(c);
         return NULL;
     }
@@ -184,18 +227,18 @@ static struct connection* server_accept(struct connection s) {
     return c;
 }
 
-static int gateway(int fd, struct http_request *req, struct http_response *res) {
+static int gateway(struct server_state *state, int fd, http_request_t *req, http_response_t *res) {
     if (strncmp(req->path, "/favicon.ico", 12) == 0) {
         res->status = HTTP_404_NOT_FOUND;
         snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n");
         return 0;
     }
 
-    if(strncmp(req->path, MODULE_URL, 6) == 0) {
+    if (strncmp(req->path, MODULE_URL, 6) == 0) {
         if (req->method == HTTP_GET) {
-           route_gateway_json(res);
+            router_gateway_json(&state->router, res);
         } else if (req->method == HTTP_POST) {
-            if (mgnt_parse_request(req, res) >= 0) {
+            if (router_mgnt_parse_request(&state->router, &state->ctx, req, res) >= 0) {
                 res->status = HTTP_200_OK;
             } else {
                 res->status = HTTP_500_INTERNAL_SERVER_ERROR;
@@ -206,39 +249,36 @@ static int gateway(int fd, struct http_request *req, struct http_response *res) 
         return 0;
     }
 
-    if(http_is_websocket_upgrade(req)) {
-        struct ws_route ws = ws_route_find(req->path);
+    if (http_is_websocket_upgrade(req)) {
+        struct ws_route ws = router_ws_find(&state->router, req->path);
         if (ws.info == NULL) {
             res->status = HTTP_404_NOT_FOUND;
             snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n");
             return 0;
         }
 
-        /* Upgrade to websocket */
-        ws_handle_client(fd, req, res, ws.info);
+        ws_handle_client(&state->ws, &state->ctx, fd, req, res, ws.info);
 
         pthread_rwlock_unlock(ws.rwlock);
 
         return 0;
     }
 
-    struct route r = route_find(req->path, (char*)http_methods[req->method]);
+    struct route r = router_find(&state->router, req->path, http_methods[req->method]);
     if (r.route == NULL) {
         res->status = HTTP_404_NOT_FOUND;
-        snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n"); 
+        snprintf(res->body, HTTP_RESPONSE_SIZE, "404 Not Found\n");
         return 0;
     }
 
-    safe_execute_handler(r.route->handler, req, res);
+    safe_execute_handler(r.route->handler, &state->ctx, req, res);
 
-    /* Release the read lock after handler execution */
     pthread_rwlock_unlock(r.rwlock);
     return 0;
 }
 
-/* Build headers for response */
-static void build_headers(struct http_response *res, char *headers, int headers_size) {
-    struct http_kv_store *headers_map = res->headers;
+static void build_headers(http_response_t *res, char *headers, int headers_size) {
+    http_kv_store_t *headers_map = res->headers;
     int headers_len = 0;
     for (size_t i = 0; i < http_kv_size(headers_map); i++) {
         int written = snprintf(headers + headers_len, headers_size - headers_len, "%s: %s\r\n", headers_map->entries[i].key, (char*)headers_map->entries[i].value);
@@ -256,29 +296,29 @@ static void measure_time(struct timespec *start, struct timespec *end, double *t
     *time_taken = (*time_taken + (end->tv_nsec - start->tv_nsec)) * 1e-9;
 }
 
-static void thread_clean_up_request(struct http_request *req) {
+static void thread_clean_up_request(http_request_t *req) {
     if (req->body) free(req->body);
     if (req->path) free(req->path);
 
-    if(req->params != NULL){
+    if (req->params != NULL) {
         http_kv_destroy(req->params, 1);
         req->params = NULL;
     }
 
-    if(req->headers != NULL){
+    if (req->headers != NULL) {
         http_kv_destroy(req->headers, 1);
         req->headers = NULL;
     }
 
-    if(req->data != NULL){
+    if (req->data != NULL) {
         http_kv_destroy(req->data, 1);
         req->data = NULL;
     }
 }
 
-static void thread_clean_up(struct http_request *req, struct http_response *res) {
+static void thread_clean_up(http_request_t *req, http_response_t *res) {
     thread_clean_up_request(req);
-    http_kv_destroy(res->headers, 0);
+    http_kv_destroy(res->headers, 1);
     free(res->body);
 }
 
@@ -286,39 +326,44 @@ static void thread_set_timeout(int sockfd, int seconds) {
     struct timeval tv;
     tv.tv_sec = seconds;
     tv.tv_usec = 0;
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv) != 0) {
+        perror("[ERROR] Failed to set socket timeout");
+    }
 }
 
 static void thread_clear_timeout(int sockfd) {
     struct timeval tv;
     tv.tv_sec = 0;
     tv.tv_usec = 0;
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv) != 0) {
+        perror("[ERROR] Failed to clear socket timeout");
+    }
 }
 
 static void thread_handle_client(void *arg) {
     int ret;
-    struct connection *c = (struct connection *)arg;
+    struct client_task *task = (struct client_task *)arg;
+    struct server_state *state = task->state;
+    struct connection *c = task->connection;
+    free(task);
+
     thread_set_timeout(c->sockfd, 2);
 
-    while(1){
+    while (1) {
         int close_connection = 0;
 
-        /* Read initial request */
-        char buffer[8*1024] = {0};
+        char buffer[REQUEST_BUFFER_SIZE] = {0};
 #ifdef PRODUCTION
         int read_size = SSL_read(c->ssl, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
             if (SSL_get_error(c->ssl, read_size) == SSL_ERROR_ZERO_RETURN) {
-                break; // Client closed the connection
+                break;
             }
-            //perror("[ERROR] SSL read failed");
             break;
         }
 #else
-        int read_size = read(c->sockfd, buffer, sizeof(buffer) - 1);
+        int read_size = (int)read(c->sockfd, buffer, sizeof(buffer) - 1);
         if (read_size <= 0) {
-            //perror("[ERROR] Read failed");
             break;
         }
 #endif
@@ -328,22 +373,24 @@ static void thread_handle_client(void *arg) {
         struct timespec start, end;
         clock_gettime(CLOCK_MONOTONIC, &start);
 
-        struct http_request req;
+        http_request_t req;
+        memset(&req, 0, sizeof(req));
         req.tid = pthread_self();
 
         http_parse(buffer, &req);
-        if(req.method == HTTP_ERR) {
+        if (req.method == HTTP_ERR) {
             dprintf(c->sockfd, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", http_errors[req.status]);
             thread_clean_up_request(&req);
             goto thread_handle_client_exit;
         }
 
-        /* Read the rest of the request */
-        while (req.content_length > read_size) {
+        int request_too_large = req.content_length > (int)(sizeof(buffer) - 1);
+
+        while (req.content_length > read_size && read_size < (int)sizeof(buffer) - 1) {
 #ifdef PRODUCTION
             ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
 #else
-            ret = read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+            ret = (int)read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
 #endif
             if (ret <= 0) {
                 break;
@@ -352,38 +399,55 @@ static void thread_handle_client(void *arg) {
             read_size += ret;
             buffer[read_size] = '\0';
         }
+
         char* body_ptr = strstr(buffer, "\r\n\r\n");
         if (body_ptr) {
             req.body = strdup(body_ptr + 4);
         } else {
             req.body = strdup("");
         }
+        if (!req.body) {
+            perror("[ERROR] Failed to allocate request body");
+            thread_clean_up_request(&req);
+            goto thread_handle_client_exit;
+        }
 
         http_parse_data(&req);
         close_connection = req.close;
 
-        struct http_response res;
+        http_response_t res;
         res.headers = http_kv_create(32);
         if (res.headers == NULL) {
             perror("[ERROR] Error creating map");
+            thread_clean_up_request(&req);
             goto thread_handle_client_exit;
         }
 
         res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
         if (res.body == NULL) {
             perror("[ERROR] Error allocating memory for response body");
+            http_kv_destroy(res.headers, 1);
+            res.headers = NULL;
+            thread_clean_up_request(&req);
             goto thread_handle_client_exit;
         }
+        res.content_length = 0;
+        res.status = HTTP_200_OK;
+        res.body[0] = '\0';
 
-        gateway(c->sockfd, &req, &res);
+        if (request_too_large) {
+            res.status = HTTP_414_URI_TOO_LONG;
+            snprintf(res.body, HTTP_RESPONSE_SIZE, "Request too large\n");
+            close_connection = 1;
+        } else {
+            gateway(state, c->sockfd, &req, &res);
+        }
 
-        /* If all threads are in use, send close */
-        if(thread_pool_is_full(pool)) {
-            http_kv_insert(res.headers, "Connection", "close");
+        if (thread_pool_is_full(state->pool)) {
+            http_kv_insert(res.headers, "Connection", strdup("close"));
             close_connection = 1;
         }
 
-        /* Servers MUST include a valid Date header in HTTP responses. */
         time_t now = time(NULL);
         struct tm tm;
         gmtime_r(&now, &tm);
@@ -392,17 +456,35 @@ static void thread_handle_client(void *arg) {
         http_kv_insert(res.headers, "Date", strdup(date));
 
         char headers[4*1024] = {0};
-        char response[8*1024] = {0};
+        char response_head[4*1024] = {0};
         build_headers(&res, headers, sizeof(headers));
-        snprintf(response, sizeof(response), HTTP_VERSION" %s\r\n%sContent-Length: %lu\r\n\r\n%s", http_errors[res.status], headers, strlen(res.body), res.body);
+        size_t body_len = res.content_length > 0 ? (size_t)res.content_length : strlen(res.body);
+        snprintf(response_head, sizeof(response_head), HTTP_VERSION" %s\r\n%sContent-Length: %zu\r\n\r\n", http_errors[res.status], headers, body_len);
 
-#ifdef PRODUCTION        
-        if (SSL_write(c->ssl, response, strlen(response)) <= 0) {
+#ifdef PRODUCTION
+        size_t header_len = strlen(response_head);
+        if (header_len > INT_MAX) {
+            fprintf(stderr, "[ERROR] Response header too large\n");
+            break;
+        }
+        if (SSL_write(c->ssl, response_head, (int)header_len) <= 0) {
+            perror("[ERROR] SSL write failed");
+            break;
+        }
+        if (body_len > INT_MAX) {
+            fprintf(stderr, "[ERROR] Response body too large\n");
+            break;
+        }
+        if (body_len > 0 && SSL_write(c->ssl, res.body, (int)body_len) <= 0) {
             perror("[ERROR] SSL write failed");
             break;
         }
 #else
-        if (write(c->sockfd, response, strlen(response)) <= 0) {
+        if (write(c->sockfd, response_head, strlen(response_head)) <= 0) {
+            perror("[ERROR] Write failed");
+            break;
+        }
+        if (body_len > 0 && write(c->sockfd, res.body, body_len) <= 0) {
             perror("[ERROR] Write failed");
             break;
         }
@@ -411,25 +493,17 @@ static void thread_handle_client(void *arg) {
         double time_taken;
         measure_time(&start, &end, &time_taken);
 
-        if (!config.silent_mode)
+        if (!state->config.silent_mode) {
             printf("[%ld] %s - Request %s %s took %f seconds.\n", (long)req.tid, http_errors[res.status], http_methods[req.method], req.path, time_taken);
-
-        /* Ugly hacks */
-        char* ac = http_kv_get(res.headers, "Sec-WebSocket-Accept");
-        if (ac) free(ac);
-        char* dt = http_kv_get(res.headers, "Date");
-        if (dt) free(dt);
+        }
 
         thread_clean_up(&req, &res);
         if (req.websocket) {
             thread_clear_timeout(c->sockfd);
-            ws_confirm_open(c->sockfd);
-            return; /* Websocket connection is handled by the websocket thread */
+            ws_confirm_open(&state->ws, &state->ctx, c->sockfd);
+            return;
         }
 
-        /**
-         * HTTP/1.1 connections MUST be persistent by default unless a Connection: close header is explicitly included.
-         */
         if (close_connection || req.version == HTTP_VERSION_1_0) {
             goto thread_handle_client_exit;
         }
@@ -453,50 +527,52 @@ static void openssl_init_wrapper(void) {
     }
 }
 
-/* Signal handler */
 static volatile sig_atomic_t stop = 0;
 static void server_signal_handler(int sig) {
-(void)sig;
+    (void)sig;
     stop = 1;
 }
-
-#include <unistd.h>
 
 int main(int argc, char *argv[]) {
     (void)allowed_management_commands;
     (void)allowed_ip_prefixes;
 
+    struct server_state state;
+    memset(&state, 0, sizeof(state));
+
+    state.config.port = DEFAULT_PORT;
+    state.config.thread_pool_size = 0;
+    state.config.silent_mode = 0;
+#ifdef PRODUCTION
+    state.config.environment = PROD;
+#else
+    state.config.environment = DEV;
+#endif
+
     int opt;
     while ((opt = getopt(argc, argv, "p:t:s")) != -1) {
         switch (opt) {
             case 'p':
-                config.port = atoi(optarg);
+                state.config.port = (uint16_t)atoi(optarg);
                 break;
             case 't':
-                config.thread_pool_size = atoi(optarg);
+                state.config.thread_pool_size = atoi(optarg);
                 break;
             case 's':
-                config.silent_mode = 1;
+                state.config.silent_mode = 1;
                 break;
             default:
                 fprintf(stderr, "Usage: %s [-p port] [-t thread_pool_size] [-s (silent mode)]\n", argv[0]);
         }
     }
 
-    /* Moved to crypto.c */
-    // SSL_library_init();
-    // OpenSSL_add_all_algorithms();
-    // SSL_load_error_strings();
+    engine_init();
 
 #ifdef PRODUCTION
-    if(ssl_ctx == NULL) {
-        fprintf(stderr, "[ERROR] SSL context is not initilized\n");
-        exit(EXIT_FAILURE);
-    }
-    printf("[SERVER] SSL context initialized\n");
+    printf("[SERVER] SSL context initialization in progress\n");
 #endif
 
-    int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+    int num_cores = (int)sysconf(_SC_NPROCESSORS_ONLN);
     printf("[SERVER] Detected %d cores\n", num_cores);
 
     CRYPTO_ONCE openssl_once = CRYPTO_ONCE_STATIC_INIT;
@@ -504,7 +580,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "[ERROR] Failed to run OpenSSL initialization\n");
         exit(EXIT_FAILURE);
     }
-    
+
     struct sigaction sa;
     sa.sa_handler = server_signal_handler;
     sigemptyset(&sa.sa_mask);
@@ -512,25 +588,29 @@ int main(int argc, char *argv[]) {
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    struct connection s = server_init(config.port);
-
-    /* Initialize thread pool, 2 times numbers of cores */
-#ifdef PRODUCTION
-    pool = thread_pool_init(config.thread_pool_size ? config.thread_pool_size : num_cores*2);
-#else
-    pool = thread_pool_init(2);
-#endif
-    if (pool == NULL) {
-        fprintf(stderr, "[ERROR] Failed to initialize thread pool\n");
+    if (server_init_services(&state) != 0) {
+        fprintf(stderr, "[ERROR] Failed to initialize services\n");
         return 1;
     }
 
-    /* Main server loop */
+    struct connection s = server_init_socket(state.config.port);
+
+#ifdef PRODUCTION
+    state.pool = thread_pool_init(state.config.thread_pool_size ? state.config.thread_pool_size : num_cores * 2);
+#else
+    state.pool = thread_pool_init(2);
+#endif
+    if (state.pool == NULL) {
+        fprintf(stderr, "[ERROR] Failed to initialize thread pool\n");
+        server_shutdown_services(&state);
+        return 1;
+    }
+
     printf("\n Version: %s\n", "0.0.1");
-    printf(" Thread Pool Size: %d\n", pool->max_threads);
-    printf(" Environment: %s\n", config.environment == PROD ? "Production" : "Development");
+    printf(" Thread Pool Size: %d\n", state.pool->max_threads);
+    printf(" Environment: %s\n", state.config.environment == PROD ? "Production" : "Development");
     printf(" PID: %d\n", getpid());
-    printf(" Listening on %s://%s:%d\n",config.environment == PROD ? "https" : "http", inet_ntoa(s.address.sin_addr), ntohs(s.address.sin_port));
+    printf(" Listening on %s://%s:%d\n", state.config.environment == PROD ? "https" : "http", inet_ntoa(s.address.sin_addr), ntohs(s.address.sin_port));
     while (!stop) {
         struct connection *client = server_accept(s);
         if (client == NULL) {
@@ -540,16 +620,25 @@ int main(int argc, char *argv[]) {
             perror("Error accepting client");
             continue;
         }
-        if(!config.silent_mode)
+        if (!state.config.silent_mode) {
             printf("[SERVER] Accepted connection from %s:%d\n", inet_ntoa(client->address.sin_addr), ntohs(client->address.sin_port));
+        }
 
-        /* Add client handling task to the thread pool */
-        thread_pool_add_task(pool, thread_handle_client, client);
+        struct client_task *task = malloc(sizeof(*task));
+        if (!task) {
+            close(client->sockfd);
+            free(client);
+            continue;
+        }
+        task->state = &state;
+        task->connection = client;
+
+        thread_pool_add_task(state.pool, thread_handle_client, task);
     }
 
-    /* Clean up */
-    thread_pool_destroy(pool);
+    thread_pool_destroy(state.pool);
     close(s.sockfd);
+    server_shutdown_services(&state);
     printf("[SERVER] Server shutting down gracefully.\n");
 
     return 0;

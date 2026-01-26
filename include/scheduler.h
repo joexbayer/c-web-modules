@@ -2,6 +2,8 @@
 #define SCHEDULER_H
 
 #include <pthread.h>
+#include <stdatomic.h>
+#include <stddef.h>
 
 typedef void (*work_t)(void *);
 typedef enum {
@@ -13,17 +15,21 @@ struct work {
     work_t work;
     void *data;
     struct work *next;
-}; 
+};
 
 struct scheduler {
-    struct work *queue;
-    int size;
-    int capacity;
-
+    struct work *head;
+    struct work *tail;
+    size_t size;
+    size_t capacity;
     pthread_mutex_t mutex;
-
-    int (*add)(void (*work)(void *), void *data, worker_state_t state);
+    pthread_cond_t work_available;
+    atomic_int running;
+    pthread_t thread;
 };
-extern struct scheduler *exposed_scheduler;
+
+int scheduler_init(struct scheduler *scheduler, size_t capacity);
+void scheduler_shutdown(struct scheduler *scheduler);
+int scheduler_add(struct scheduler *scheduler, work_t work, void *data, worker_state_t state);
 
 #endif // SCHEDULER_H
