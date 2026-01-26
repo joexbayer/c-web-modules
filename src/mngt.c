@@ -10,7 +10,6 @@
 #include <dlfcn.h>
 #include <time.h>
 
-#define TMP_DIR "modules"
 #ifdef __APPLE__
     #define CFLAGS "-fPIC -shared -I./include -I/opt/homebrew/opt/jansson/include -I/opt/homebrew/opt/openssl@3/include"
     #define LIBS "-L./libs -lmodule -lhttp -L/opt/homebrew/opt/jansson/lib -ljansson -lsqlite3 -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto"
@@ -21,10 +20,10 @@
     #error "Unsupported platform"
 #endif
 
-int write_and_compile(const char *filename, const char *code, char *error_buffer, size_t buffer_size) {
-    char source_path[SO_PATH_MAX_LEN], so_path[SO_PATH_MAX_LEN];
-    if (snprintf(source_path, sizeof(source_path), "%s/%s.c", TMP_DIR, filename) >= (int)sizeof(source_path) ||
-        snprintf(so_path, sizeof(so_path), "%s/%s.so", TMP_DIR, filename) >= (int)sizeof(so_path)) {
+int write_and_compile(const char *module_dir, const char *filename, const char *code, char *error_buffer, size_t buffer_size) {
+    char source_path[SO_PATH_MAX_LEN * 2], so_path[SO_PATH_MAX_LEN * 2];
+    if (snprintf(source_path, sizeof(source_path), "%s/%s.c", module_dir, filename) >= (int)sizeof(source_path) ||
+        snprintf(so_path, sizeof(so_path), "%s/%s.so", module_dir, filename) >= (int)sizeof(so_path)) {
         fprintf(stderr, "[ERROR] Path buffer overflow.\n");
         return -1;
     }

@@ -403,6 +403,11 @@ typedef struct job_info {
       <p>Compile and run the server:</p>
       <pre><code class="language-bash">make
 make run</code></pre>
+      <p>Server flags:</p>
+      <ul>
+        <li><code>--module-dir &lt;path&gt;</code> (or <code>-m &lt;path&gt;</code>): Store compiled modules and routes.dat in a specific directory. Defaults to modules.</li>
+        <li><code>--purge-modules</code> (or <code>-P</code>): Delete compiled .so modules on shutdown. Off by default.</li>
+      </ul>
 
       <h2 id="websockets">WebSockets</h2>
       <p>WebSockets enable real-time streaming between clients and the server. The server exposes /jobs/ws for job

@@ -54,10 +54,12 @@ struct router {
     void *module_handle;
     int count;
     struct ws_server *ws;
+    char module_dir[SO_PATH_MAX_LEN];
     char route_file[SO_PATH_MAX_LEN];
+    int purge_modules;
 };
 
-int router_init(struct router *router, struct ws_server *ws, const char *route_file, struct cweb_context *ctx);
+int router_init(struct router *router, struct ws_server *ws, const char *route_file, const char *module_dir, int purge_modules, struct cweb_context *ctx);
 void router_shutdown(struct router *router, struct cweb_context *ctx);
 int router_register_module(struct router *router, struct cweb_context *ctx, const char* so_path);
 struct route router_find(struct router *router, const char *route, const char *method);

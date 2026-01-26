@@ -8,6 +8,7 @@
 #include <time.h>
 #include <limits.h>
 #include <stdatomic.h>
+#include <getopt.h>
 
 #include <pthread.h>
 #include <sys/socket.h>
@@ -72,6 +73,8 @@ struct server_config {
     shutdown_policy_t shutdown_policy;
     const char *admin_key;
     size_t admin_key_len;
+    char module_dir[SO_PATH_MAX_LEN];
+    int purge_modules;
 };
 
 struct server_state {
@@ -219,7 +222,7 @@ static int server_init_services(struct server_state *state) {
         return -1;
     }
 
-    if (router_init(&state->router, &state->ws, NULL, &state->ctx) != 0) {
+    if (router_init(&state->router, &state->ws, NULL, state->config.module_dir, state->config.purge_modules, &state->ctx) != 0) {
         ws_shutdown(&state->ws, &state->ctx);
         crypto_shutdown(&state->crypto);
         sqldb_shutdown(&state->database);
@@ -674,6 +677,8 @@ int main(int argc, char *argv[]) {
     state.config.port = DEFAULT_PORT;
     state.config.thread_pool_size = 0;
     state.config.silent_mode = 0;
+    state.config.purge_modules = 0;
+    snprintf(state.config.module_dir, sizeof(state.config.module_dir), "%s", "modules");
 #ifdef PRODUCTION
     state.config.environment = PROD;
 #else
@@ -683,7 +688,13 @@ int main(int argc, char *argv[]) {
     server_load_auth_config(&state);
 
     int opt;
-    while ((opt = getopt(argc, argv, "p:t:sF")) != -1) {
+    static struct option long_options[] = {
+        {"module-dir", required_argument, NULL, 'm'},
+        {"purge-modules", no_argument, NULL, 'P'},
+        {0, 0, 0, 0}
+    };
+
+    while ((opt = getopt_long(argc, argv, "p:t:sFm:P", long_options, NULL)) != -1) {
         switch (opt) {
             case 'p':
                 state.config.port = (uint16_t)atoi(optarg);
@@ -697,8 +708,14 @@ int main(int argc, char *argv[]) {
             case 'F':
                 server_set_shutdown_policy(&state, SHUTDOWN_POLICY_FORCE);
                 break;
+            case 'm':
+                snprintf(state.config.module_dir, sizeof(state.config.module_dir), "%s", optarg);
+                break;
+            case 'P':
+                state.config.purge_modules = 1;
+                break;
             default:
-                fprintf(stderr, "Usage: %s [-p port] [-t thread_pool_size] [-s (silent mode)] [-F (force shutdown)]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-p port] [-t thread_pool_size] [-s (silent mode)] [-F (force shutdown)] [--module-dir path] [--purge-modules]\n", argv[0]);
         }
     }
 

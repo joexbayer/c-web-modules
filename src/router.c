@@ -12,9 +12,10 @@
 #include <string.h>
 #include <openssl/evp.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 #define MODULE_TAG "config"
-#define ROUTE_FILE "modules/routes.dat"
+#define DEFAULT_MODULE_DIR "modules"
 
 static int router_save_to_disk(struct router *router, const char* filename);
 static int router_load_from_disk(struct router *router, const char* filename, struct cweb_context *ctx);
@@ -100,7 +101,7 @@ static struct module_ref *module_ref_create(const char *so_path, module_t *modul
     return ref;
 }
 
-static void module_ref_destroy(struct module_ref *ref, struct cweb_context *ctx) {
+static void module_ref_destroy(struct module_ref *ref, struct cweb_context *ctx, int purge_modules) {
     if (!ref) {
         return;
     }
@@ -114,7 +115,9 @@ static void module_ref_destroy(struct module_ref *ref, struct cweb_context *ctx)
     }
 
     if (ref->handle) {
-        unlink(ref->so_path);
+        if (purge_modules) {
+            unlink(ref->so_path);
+        }
         dlclose(ref->handle);
     }
 
@@ -127,7 +130,7 @@ static void router_retire_module_ref(struct router *router, struct module_ref *r
     }
 
     if (atomic_load(&ref->job_refs) == 0) {
-        module_ref_destroy(ref, ctx);
+        module_ref_destroy(ref, ctx, router->purge_modules);
         return;
     }
 
@@ -159,7 +162,7 @@ void router_job_release(struct router *router, struct module_ref *ref, struct cw
     }
     pthread_mutex_unlock(&router->retired_mutex);
 
-    module_ref_destroy(ref, ctx);
+    module_ref_destroy(ref, ctx, router->purge_modules);
 }
 static struct gateway_entry* find_gateway_entry(struct router *router, const char* module) {
     for (int i = 0; i < router->count; i++) {
@@ -559,7 +562,7 @@ static void router_cleanup(struct router *router, struct cweb_context *ctx) {
     for (int i = 0; i < router->count; i++) {
         pthread_rwlock_wrlock(&router->entries[i].rwlock);
         if (router->entries[i].ref) {
-            module_ref_destroy(router->entries[i].ref, ctx);
+            module_ref_destroy(router->entries[i].ref, ctx, router->purge_modules);
             router->entries[i].ref = NULL;
         }
         pthread_rwlock_unlock(&router->entries[i].rwlock);
@@ -570,7 +573,7 @@ static void router_cleanup(struct router *router, struct cweb_context *ctx) {
     struct module_ref *ref = router->retired;
     while (ref) {
         struct module_ref *next = ref->next;
-        module_ref_destroy(ref, ctx);
+        module_ref_destroy(ref, ctx, router->purge_modules);
         ref = next;
     }
     router->retired = NULL;
@@ -667,19 +670,50 @@ static int router_load_from_disk(struct router *router, const char* filename, st
     return 0;
 }
 
-int router_init(struct router *router, struct ws_server *ws, const char *route_file, struct cweb_context *ctx) {
+static int router_ensure_module_dir(const char *module_dir) {
+    struct stat st;
+    if (stat(module_dir, &st) == 0) {
+        if (S_ISDIR(st.st_mode)) {
+            return 0;
+        }
+        fprintf(stderr, "[ERROR] Module dir exists but is not a directory: %s\n", module_dir);
+        return -1;
+    }
+    if (mkdir(module_dir, 0755) != 0) {
+        perror("[ERROR] Failed to create module directory");
+        return -1;
+    }
+    return 0;
+}
+
+int router_init(struct router *router, struct ws_server *ws, const char *route_file, const char *module_dir, int purge_modules, struct cweb_context *ctx) {
     if (!router) {
         return -1;
     }
 
     router->count = 0;
     router->ws = ws;
+    router->module_dir[0] = '\0';
     router->route_file[0] = '\0';
+    router->purge_modules = purge_modules;
 
-    if (route_file) {
+    if (module_dir && module_dir[0] != '\0') {
+        strncpy(router->module_dir, module_dir, sizeof(router->module_dir) - 1);
+    } else {
+        strncpy(router->module_dir, DEFAULT_MODULE_DIR, sizeof(router->module_dir) - 1);
+    }
+
+    if (router_ensure_module_dir(router->module_dir) != 0) {
+        return -1;
+    }
+
+    if (route_file && route_file[0] != '\0') {
         strncpy(router->route_file, route_file, sizeof(router->route_file) - 1);
     } else {
-        strncpy(router->route_file, ROUTE_FILE, sizeof(router->route_file) - 1);
+        if (snprintf(router->route_file, sizeof(router->route_file), "%s/routes.dat", router->module_dir) >= (int)sizeof(router->route_file)) {
+            fprintf(stderr, "[ERROR] Route file path overflow\n");
+            return -1;
+        }
     }
 
     pthread_rwlock_init(&router->rwlock, NULL);
@@ -727,7 +761,7 @@ int router_mgnt_parse_request(struct router *router, struct cweb_context *ctx, h
         return -1;
     }
 
-    extern int write_and_compile(const char *filename, const char *code, char *error_buffer, size_t buffer_size);
+    extern int write_and_compile(const char *module_dir, const char *filename, const char *code, char *error_buffer, size_t buffer_size);
 
     char* hash = NULL;
     {
@@ -754,14 +788,18 @@ int router_mgnt_parse_request(struct router *router, struct cweb_context *ctx, h
     char filename[256];
     snprintf(filename, sizeof(filename), "%s", hash);
 
-    if (write_and_compile(filename, code, res->body, HTTP_RESPONSE_SIZE) == -1) {
+    if (write_and_compile(router->module_dir, filename, code, res->body, HTTP_RESPONSE_SIZE) == -1) {
         fprintf(stderr, "[ERROR] Failed to register '%s' due to compilation error.\n", filename);
         free(hash);
         return -1;
     }
 
-    char so_path[SO_PATH_MAX_LEN + 12];
-    snprintf(so_path, sizeof(so_path), "modules/%s.so", filename);
+    char so_path[SO_PATH_MAX_LEN * 2];
+    if (snprintf(so_path, sizeof(so_path), "%s/%s.so", router->module_dir, filename) >= (int)sizeof(so_path)) {
+        fprintf(stderr, "[ERROR] Module path overflow.\n");
+        free(hash);
+        return -1;
+    }
 
     free(hash);
 

@@ -230,6 +230,11 @@ make
 make run
 ```
 
+### Server flags
+
+- `--module-dir <path>` (or `-m <path>`): Store compiled modules and `routes.dat` in a specific directory. Defaults to `modules`.
+- `--purge-modules` (or `-P`): Delete compiled `.so` modules on shutdown. Off by default.
+
 ## Docker
 
 ```bash
