@@ -173,6 +173,9 @@ int main(int argc, char *argv[]) {
                 break;
             }
             if (errno == EINTR) {
+                if (stop) {
+                    break;
+                }
                 continue;
             }
             perror("Error accepting client");
