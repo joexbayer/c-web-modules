@@ -43,6 +43,11 @@ typedef struct job_work {
     char *payload_json;
 } job_work_t;
 
+typedef struct job_registry_entry {
+    struct module_ref *ref;
+    job_info_t *job;
+} job_registry_entry_t;
+
 static const char *job_state_to_string(job_state_t state) {
     switch (state) {
         case JOB_STATE_PENDING:
@@ -208,6 +213,101 @@ static int jobs_subscribers_add(job_system_t *jobs, const char *job_uuid, websoc
     list_add(list, subscriber);
     pthread_mutex_unlock(&jobs->subscribers_mutex);
     return 0;
+}
+
+static void jobs_registry_free(job_registry_entry_t *entry) {
+    if (!entry) {
+        return;
+    }
+    free(entry);
+}
+
+static int jobs_registry_insert(job_system_t *jobs, const char *job_name, struct module_ref *ref, job_info_t *job) {
+    if (!jobs || !job_name || !ref || !job) {
+        return -1;
+    }
+
+    job_registry_entry_t *entry = malloc(sizeof(*entry));
+    if (!entry) {
+        return -1;
+    }
+
+    entry->ref = ref;
+    entry->job = job;
+
+    job_registry_entry_t *existing = map_get(jobs->job_registry, job_name);
+    if (existing) {
+        jobs_registry_free(existing);
+    }
+
+    if (map_insert(jobs->job_registry, job_name, entry) != MAP_OK) {
+        jobs_registry_free(entry);
+        return -1;
+    }
+
+    return 0;
+}
+
+int jobs_register_module(job_system_t *jobs, struct module_ref *ref) {
+    if (!jobs || !jobs->job_registry || !ref || !ref->module) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&jobs->job_registry_mutex);
+    int rc = 0;
+    for (int i = 0; i < ref->module->job_size; i++) {
+        job_info_t *job = &ref->module->jobs[i];
+        if (!job || !job->name) {
+            continue;
+        }
+        if (jobs_registry_insert(jobs, job->name, ref, job) != 0) {
+            rc = -1;
+        }
+    }
+    pthread_mutex_unlock(&jobs->job_registry_mutex);
+    return rc;
+}
+
+void jobs_unregister_module(job_system_t *jobs, struct module_ref *ref) {
+    if (!jobs || !jobs->job_registry || !ref) {
+        return;
+    }
+
+    pthread_mutex_lock(&jobs->job_registry_mutex);
+    for (size_t i = 0; i < jobs->job_registry->capacity; i++) {
+        struct map_entry *entry = &jobs->job_registry->entries[i];
+        if (entry->state != MAP_ENTRY_OCCUPIED) {
+            continue;
+        }
+        job_registry_entry_t *value = entry->value;
+        if (value && value->ref == ref) {
+            jobs_registry_free(value);
+            map_remove(jobs->job_registry, entry->key);
+        }
+    }
+    pthread_mutex_unlock(&jobs->job_registry_mutex);
+}
+
+static struct job_route jobs_registry_find(job_system_t *jobs, const char *job_name) {
+    if (!jobs || !jobs->job_registry || !job_name) {
+        return (struct job_route){0};
+    }
+
+    pthread_mutex_lock(&jobs->job_registry_mutex);
+    job_registry_entry_t *entry = map_get(jobs->job_registry, job_name);
+    if (!entry || !entry->ref || !entry->job) {
+        pthread_mutex_unlock(&jobs->job_registry_mutex);
+        return (struct job_route){0};
+    }
+
+    atomic_fetch_add(&entry->ref->job_refs, 1);
+    struct job_route route = {
+        .job = entry->job,
+        .ref = entry->ref
+    };
+    snprintf(route.module_hash, sizeof(route.module_hash), "%s", entry->ref->module_hash);
+    pthread_mutex_unlock(&jobs->job_registry_mutex);
+    return route;
 }
 
 static void jobs_send_event_to_ws(websocket_t *ws, const char *job_uuid, int event_id, int ts, const char *type, const char *data_json) {
@@ -594,6 +694,23 @@ int jobs_init(job_system_t *jobs, struct cweb_context *ctx, struct router *route
         return -1;
     }
 
+    jobs->job_registry = map_create(16);
+    if (!jobs->job_registry) {
+        pthread_mutex_destroy(&jobs->subscribers_mutex);
+        map_destroy(jobs->subscribers);
+        jobs->subscribers = NULL;
+        return -1;
+    }
+
+    if (pthread_mutex_init(&jobs->job_registry_mutex, NULL) != 0) {
+        map_destroy(jobs->job_registry);
+        jobs->job_registry = NULL;
+        pthread_mutex_destroy(&jobs->subscribers_mutex);
+        map_destroy(jobs->subscribers);
+        jobs->subscribers = NULL;
+        return -1;
+    }
+
     const char *jobs_table =
         "CREATE TABLE IF NOT EXISTS jobs ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -624,9 +741,12 @@ int jobs_init(job_system_t *jobs, struct cweb_context *ctx, struct router *route
     if (jobs_db_exec(jobs->db, jobs_table) != 0 ||
         jobs_db_exec(jobs->db, events_table) != 0 ||
         jobs_db_exec(jobs->db, events_index) != 0) {
+        pthread_mutex_destroy(&jobs->job_registry_mutex);
+        map_destroy(jobs->job_registry);
+        jobs->job_registry = NULL;
+        pthread_mutex_destroy(&jobs->subscribers_mutex);
         map_destroy(jobs->subscribers);
         jobs->subscribers = NULL;
-        pthread_mutex_destroy(&jobs->subscribers_mutex);
         return -1;
     }
 
@@ -634,6 +754,12 @@ int jobs_init(job_system_t *jobs, struct cweb_context *ctx, struct router *route
     jobs->ws_info.on_open = jobs_ws_on_open;
     jobs->ws_info.on_message = jobs_ws_on_message;
     jobs->ws_info.on_close = jobs_ws_on_close;
+
+    for (int i = 0; i < router->count; i++) {
+        if (router->entries[i].ref) {
+            jobs_register_module(jobs, router->entries[i].ref);
+        }
+    }
 
     return 0;
 }
@@ -656,6 +782,20 @@ void jobs_shutdown(job_system_t *jobs) {
     }
     pthread_mutex_unlock(&jobs->subscribers_mutex);
     pthread_mutex_destroy(&jobs->subscribers_mutex);
+
+    pthread_mutex_lock(&jobs->job_registry_mutex);
+    if (jobs->job_registry) {
+        for (size_t i = 0; i < jobs->job_registry->capacity; i++) {
+            struct map_entry *entry = &jobs->job_registry->entries[i];
+            if (entry->state == MAP_ENTRY_OCCUPIED) {
+                jobs_registry_free(entry->value);
+            }
+        }
+        map_destroy(jobs->job_registry);
+        jobs->job_registry = NULL;
+    }
+    pthread_mutex_unlock(&jobs->job_registry_mutex);
+    pthread_mutex_destroy(&jobs->job_registry_mutex);
 }
 
 const websocket_info_t *jobs_ws_info(job_system_t *jobs) {
@@ -680,19 +820,17 @@ static int jobs_handle_create(job_system_t *jobs, struct cweb_context *ctx, http
         return jobs_respond_error(res, HTTP_400_BAD_REQUEST, "json must be object");
     }
 
-    json_t *module_val = json_object_get(root, "module");
     json_t *job_val = json_object_get(root, "job");
     json_t *payload_val = json_object_get(root, "payload");
 
-    if (!json_is_string(module_val) || !json_is_string(job_val)) {
+    if (!json_is_string(job_val)) {
         json_decref(root);
-        return jobs_respond_error(res, HTTP_400_BAD_REQUEST, "missing module or job");
+        return jobs_respond_error(res, HTTP_400_BAD_REQUEST, "missing job");
     }
 
-    const char *module_name = json_string_value(module_val);
     const char *job_name = json_string_value(job_val);
 
-    struct job_route job_route = router_job_find(jobs->router, module_name, job_name);
+    struct job_route job_route = jobs_registry_find(jobs, job_name);
     if (!job_route.job) {
         json_decref(root);
         return jobs_respond_error(res, HTTP_404_NOT_FOUND, "job not found");
@@ -726,6 +864,7 @@ static int jobs_handle_create(job_system_t *jobs, struct cweb_context *ctx, http
     }
 
     int job_id = 0;
+    const char *module_name = job_route.ref && job_route.ref->module ? job_route.ref->module->name : "";
     if (jobs_insert_job(jobs, job_uuid, module_name, job_name, job_route.module_hash, payload_json, &job_id) != 0) {
         router_job_release(jobs->router, job_route.ref, ctx);
         json_decref(root);
@@ -777,6 +916,85 @@ static int jobs_handle_create(job_system_t *jobs, struct cweb_context *ctx, http
     free(response);
     http_kv_insert(res->headers, "Content-Type", strdup("application/json"));
     res->status = HTTP_200_OK;
+    return 0;
+}
+
+int jobs_create_impl(void *user_data,
+    const char *job_name,
+    const char *payload_json,
+    uuid_t *job_uuid_out) {
+    struct cweb_context *ctx = user_data;
+    if (!ctx || !ctx->jobs || !job_name || !job_uuid_out) {
+        return -1;
+    }
+
+    job_system_t *jobs = ctx->jobs;
+    struct job_route job_route = jobs_registry_find(jobs, job_name);
+    if (!job_route.job) {
+        return -1;
+    }
+
+    if (!jobs->scheduler) {
+        router_job_release(jobs->router, job_route.ref, ctx);
+        return -1;
+    }
+
+    char *payload_copy = NULL;
+    if (payload_json && payload_json[0] != '\0') {
+        payload_copy = strdup(payload_json);
+    } else {
+        payload_copy = strdup("{}");
+    }
+
+    if (!payload_copy) {
+        router_job_release(jobs->router, job_route.ref, ctx);
+        return -1;
+    }
+
+    char job_uuid[JOB_UUID_STR_LEN];
+    if (jobs_generate_uuid(job_uuid) != 0) {
+        router_job_release(jobs->router, job_route.ref, ctx);
+        free(payload_copy);
+        return -1;
+    }
+
+    int job_id = 0;
+    const char *module_name = job_route.ref && job_route.ref->module ? job_route.ref->module->name : "";
+    if (jobs_insert_job(jobs, job_uuid, module_name, job_name, job_route.module_hash, payload_copy, &job_id) != 0) {
+        router_job_release(jobs->router, job_route.ref, ctx);
+        free(payload_copy);
+        return -1;
+    }
+
+    jobs_insert_event(jobs, job_id, (int)time(NULL), "created", payload_copy, NULL);
+
+    job_work_t *work = calloc(1, sizeof(*work));
+    if (!work) {
+        router_job_release(jobs->router, job_route.ref, ctx);
+        free(payload_copy);
+        return -1;
+    }
+
+    work->jobs = jobs;
+    work->ctx = ctx;
+    work->ref = job_route.ref;
+    work->job = job_route.job;
+    work->job_id = job_id;
+    snprintf(work->job_uuid, sizeof(work->job_uuid), "%s", job_uuid);
+    work->payload_json = payload_copy;
+
+    if (scheduler_add(jobs->scheduler, jobs_execute, work, ASYNC) != 0) {
+        jobs_update_state(jobs, job_id, JOB_STATE_FAILED, NULL, "scheduler unavailable");
+        jobs_insert_event(jobs, job_id, (int)time(NULL), "failed", "scheduler unavailable", NULL);
+        router_job_release(jobs->router, job_route.ref, ctx);
+        free(payload_copy);
+        free(work);
+        return -1;
+    }
+
+    if (uuid_from_string(job_uuid_out, job_uuid) != 0) {
+        return -1;
+    }
     return 0;
 }
 

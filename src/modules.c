@@ -1,6 +1,7 @@
 #include "router.h"
 #include "engine.h"
 #include "ws.h"
+#include "jobs.h"
 #include <dlfcn.h>
 #include <pthread.h>
 #include <regex.h>
@@ -99,6 +100,10 @@ static struct module_ref *module_ref_create(const char *so_path, module_t *modul
 static void module_ref_destroy(struct module_ref *ref, struct cweb_context *ctx, int purge_modules) {
     if (!ref) {
         return;
+    }
+
+    if (ctx && ctx->jobs) {
+        jobs_unregister_module(ctx->jobs, ref);
     }
 
     if (ref->module && ref->module->unload) {
@@ -294,7 +299,16 @@ static int update_gateway_entry(struct router *router, int index, const char* so
         ws_update_container(router->ws, router->entries[index].ref->module->websockets[i].path, &router->entries[index].ref->module->websockets[i]);
     }
 
+    if (ctx && ctx->jobs && ctx->jobs->job_registry) {
+        if (jobs_register_module(ctx->jobs, new_ref) != 0) {
+            fprintf(stderr, "[ERROR] Failed to register jobs for module %s\n", module->name);
+        }
+    }
+
     if (old_ref) {
+        if (ctx && ctx->jobs && ctx->jobs->job_registry) {
+            jobs_unregister_module(ctx->jobs, old_ref);
+        }
         router_retire_module_ref(router, old_ref, ctx);
     }
 

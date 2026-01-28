@@ -2,6 +2,7 @@
 #define CWEB_H
 
 #include <http.h>
+#include "uuid.h"
 #include <cweb_config.h>
 #include <container.h>
 #include <scheduler.h>
@@ -21,6 +22,11 @@ struct symbols {
 };
 
 struct job_system;
+
+typedef int (*jobs_create_fn_t)(void *user_data,
+    const char *job_name,
+    const char *payload_json,
+    uuid_t *job_uuid_out);
 
 typedef struct cweb_context {
     struct container *cache;
@@ -88,5 +94,8 @@ typedef struct module {
     void (*onload)(struct cweb_context *);
     void (*unload)(struct cweb_context *);
 } module_t;
+
+void jobs_bind(jobs_create_fn_t fn, void *user_data);
+int jobs_create(const char *job_name, const char *payload_json, uuid_t *job_uuid_out);
 
 #endif // CWEB_H

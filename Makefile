@@ -43,7 +43,7 @@ TARGET = $(BIN_DIR)/cweb
 
 # Library
 LIB_DIR = libs
-LIB_SRCS = libs/module.c src/map.c
+LIB_SRCS = libs/module.c src/map.c src/uuid.c
 LIB_OBJS = $(patsubst $(LIB_DIR)/%.c, $(BUILD_DIR)/%.o, $(LIB_SRCS))
 LIB_TARGET = $(LIB_DIR)/libmodule.so
 HTTP_LIB_SRCS = libs/http.c

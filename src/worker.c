@@ -2,6 +2,7 @@
 #include "engine.h"
 #include "pool.h"
 #include <limits.h>
+#include <dlfcn.h>
 #include <openssl/ssl.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -81,6 +82,31 @@ int server_init_services(struct server_state *state) {
         container_shutdown(&state->cache);
         return -1;
     }
+    if (!state->router.module_handle) {
+        fprintf(stderr, "[ERROR] libmodule handle missing\n");
+        jobs_shutdown(&state->jobs);
+        router_shutdown(&state->router, &state->ctx);
+        ws_shutdown(&state->ws, &state->ctx);
+        crypto_shutdown(&state->crypto);
+        sqldb_shutdown(&state->database);
+        scheduler_shutdown(&state->scheduler);
+        container_shutdown(&state->cache);
+        return -1;
+    }
+
+    void (*bind_fn)(jobs_create_fn_t, void *) = dlsym(state->router.module_handle, "jobs_bind");
+    if (!bind_fn) {
+        fprintf(stderr, "[ERROR] Failed to bind jobs_create\n");
+        jobs_shutdown(&state->jobs);
+        router_shutdown(&state->router, &state->ctx);
+        ws_shutdown(&state->ws, &state->ctx);
+        crypto_shutdown(&state->crypto);
+        sqldb_shutdown(&state->database);
+        scheduler_shutdown(&state->scheduler);
+        container_shutdown(&state->cache);
+        return -1;
+    }
+    bind_fn(jobs_create_impl, &state->ctx);
 
     return 0;
 }
