@@ -30,6 +30,6 @@ void jobs_unregister_module(job_system_t *jobs, struct module_ref *ref);
 int jobs_create_impl(void *user_data,
     const char *job_name,
     const char *payload_json,
-    uuid_t *job_uuid_out);
+    cweb_uuid_t *job_uuid_out);
 
 #endif // JOBS_H

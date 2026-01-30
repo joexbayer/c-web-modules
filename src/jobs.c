@@ -922,7 +922,7 @@ static int jobs_handle_create(job_system_t *jobs, struct cweb_context *ctx, http
 int jobs_create_impl(void *user_data,
     const char *job_name,
     const char *payload_json,
-    uuid_t *job_uuid_out) {
+    cweb_uuid_t *job_uuid_out) {
     struct cweb_context *ctx = user_data;
     if (!ctx || !ctx->jobs || !job_name || !job_uuid_out) {
         return -1;

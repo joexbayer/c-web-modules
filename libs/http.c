@@ -3,6 +3,15 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+
+static int http_hex_value(char c);
+static int http_token_equals(const char *token, size_t token_len, const char *expected);
+static int http_parse_transfer_encoding_value(const char *value, int *is_chunked, int *has_other);
+static int http_header_has_token(const char *value, const char *token);
+static const char *http_find_crlf(const char *buf, size_t len);
+static const char *http_find_crlfcrlf(const char *buf, size_t len);
 
 static char* http_strstr(const char *str, const char *substr) {
     const char *p = str;
@@ -43,6 +52,15 @@ static int http_strcasecmp(const char *a, const char *b) {
         b++;
     }
     return (unsigned char)*a - (unsigned char)*b;
+}
+
+static void http_str_to_lower(char *str) {
+    if (!str) {
+        return;
+    }
+    for (; *str != '\0'; str++) {
+        *str = (char)tolower((unsigned char)*str);
+    }
 }
 
 static char* http_strdup(const char *str) {
@@ -109,7 +127,7 @@ int http_kv_insert(http_kv_store_t *store, const char *key, char *value) {
     }
 
     for (size_t i = 0; i < store->size; ++i) {
-        if (strcmp(store->entries[i].key, key) == 0) {
+        if (http_strcasecmp(store->entries[i].key, key) == 0) {
             return 0;
         }
     }
@@ -118,6 +136,8 @@ int http_kv_insert(http_kv_store_t *store, const char *key, char *value) {
     if (!dup_key) {
         return -1;
     }
+    /* RFC 9110 §5.1: field names are case-insensitive. */
+    http_str_to_lower(dup_key);
 
     store->entries[store->size].key = dup_key;
     store->entries[store->size].value = value;
@@ -131,7 +151,7 @@ char *http_kv_get(const http_kv_store_t *store, const char *key) {
     }
 
     for (size_t i = 0; i < store->size; ++i) {
-        if (strcmp(store->entries[i].key, key) == 0) {
+        if (http_strcasecmp(store->entries[i].key, key) == 0) {
             return store->entries[i].value;
         }
     }
@@ -142,7 +162,7 @@ size_t http_kv_size(const http_kv_store_t *store) {
     return store ? store->size : 0;
 }
 
-/* Hypertext Transfer Protocol -- HTTP/1.1 Spec:  https://datatracker.ietf.org/doc/html/rfc2616 */
+/* Hypertext Transfer Protocol -- HTTP/1.1 Spec: RFC 9110 / RFC 9112 */
 const char *http_methods[] = {"GET", "POST", "PUT", "DELETE", "OPTIONS"};
 const char *http_errors[] = {
     "400 Bad Request", /* Unknown defaults to 400 */
@@ -150,7 +170,8 @@ const char *http_errors[] = {
     "200 OK",
     "302 Found",
     "400 Bad Request", "401 Unauthorized", "403 Forbidden", "404 Not Found", "405 Method Not Allowed", "409 Conflict", "414 URI Too Long",
-    "500 Internal Server Error"
+    "500 Internal Server Error",
+    "501 Not Implemented"
 };
 
 /* Helper function to trim trailing whitespace */
@@ -178,8 +199,132 @@ static void http_parse_method(const char *method, http_request_t *req) {
     }
 }
 
+static int http_header_name_invalid(const char *name) {
+    /* RFC 9110 §5.1: field-name is a token; no whitespace allowed. */
+    if (!name || *name == '\0') {
+        return 1;
+    }
+    for (const char *p = name; *p != '\0'; p++) {
+        if (*p == ' ' || *p == '\t') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const char *http_find_crlf(const char *buf, size_t len) {
+    for (size_t i = 0; i + 1 < len; i++) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n') {
+            return buf + i;
+        }
+    }
+    return NULL;
+}
+
+static const char *http_find_crlfcrlf(const char *buf, size_t len) {
+    for (size_t i = 0; i + 3 < len; i++) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+            return buf + i;
+        }
+    }
+    return NULL;
+}
+
+/* RFC 9112 §7.1: chunked transfer coding. */
+int http_decode_chunked_body(const char *body, size_t body_len, char **out, size_t *out_len) {
+    if (!body || !out || !out_len) {
+        return -1;
+    }
+
+    char *decoded = malloc(body_len + 1);
+    if (!decoded) {
+        return -1;
+    }
+
+    size_t decoded_len = 0;
+    size_t pos = 0;
+
+    while (pos < body_len) {
+        const char *line_end = http_find_crlf(body + pos, body_len - pos);
+        if (!line_end) {
+            free(decoded);
+            return 1;
+        }
+
+        size_t line_len = (size_t)(line_end - (body + pos));
+        if (line_len == 0) {
+            free(decoded);
+            return -1;
+        }
+
+        size_t chunk_size = 0;
+        int saw_digit = 0;
+        for (size_t i = 0; i < line_len; i++) {
+            char c = body[pos + i];
+            if (c == ';') {
+                break;
+            }
+            if (c == ' ' || c == '\t') {
+                continue;
+            }
+            int hex = http_hex_value(c);
+            if (hex < 0) {
+                free(decoded);
+                return -1;
+            }
+            saw_digit = 1;
+            if (chunk_size > (SIZE_MAX - (size_t)hex) / 16) {
+                free(decoded);
+                return -1;
+            }
+            chunk_size = chunk_size * 16 + (size_t)hex;
+        }
+
+        if (!saw_digit) {
+            free(decoded);
+            return -1;
+        }
+
+        pos += line_len + 2;
+        if (chunk_size == 0) {
+            const char *trail_end = http_find_crlfcrlf(body + pos, body_len - pos);
+            if (!trail_end) {
+                free(decoded);
+                return 1;
+            }
+            decoded[decoded_len] = '\0';
+            *out = decoded;
+            *out_len = decoded_len;
+            return 0;
+        }
+
+        if (body_len - pos < chunk_size + 2) {
+            free(decoded);
+            return 1;
+        }
+
+        if (decoded_len + chunk_size > body_len) {
+            free(decoded);
+            return -1;
+        }
+
+        memcpy(decoded + decoded_len, body + pos, chunk_size);
+        decoded_len += chunk_size;
+        pos += chunk_size;
+
+        if (body[pos] != '\r' || body[pos + 1] != '\n') {
+            free(decoded);
+            return -1;
+        }
+        pos += 2;
+    }
+
+    free(decoded);
+    return 1;
+}
+
 /* Parses HTTP headers and puts them into headers map */
-static void http_parse_headers(const char *headers, http_request_t *req) {
+static int http_parse_headers(const char *headers, http_request_t *req) {
     const char *line_start = headers;
 
     while (*line_start != '\0') {
@@ -193,28 +338,51 @@ static void http_parse_headers(const char *headers, http_request_t *req) {
         char *line = malloc(line_length + 1);
         if (!line) {
             printf("[ERROR] Failed to allocate memory for header line");
-            return;
+            return -1;
         }
         strncpy(line, line_start, line_length);
         line[line_length] = '\0';
 
+        /* RFC 9112 §5.1: obs-fold is invalid; reject header lines starting with SP/HTAB. */
+        if (line[0] == ' ' || line[0] == '\t') {
+            free(line);
+            return -1;
+        }
+
         char *colon = http_strchr(line, ':');
-        if (colon) {
-            *colon = '\0';
-            char *key = line;
-            char *value = colon + 1;
-            while (*value == ' ') {
-                value++;
-            }
+        if (!colon) {
+            free(line);
+            return -1;
+        }
 
-            char* k_value = http_strdup(value);
-            if(!k_value) {
-                printf("[ERROR] Failed to allocate memory for header key");
-                free(line);
-                return;
-            }
+        *colon = '\0';
+        char *key = line;
+        char *value = colon + 1;
+        if (http_header_name_invalid(key)) {
+            free(line);
+            return -1;
+        }
 
-            http_kv_insert(req->headers, key, k_value);
+        if (http_kv_get(req->headers, key) != NULL) {
+            free(line);
+            continue;
+        }
+
+        while (*value == ' ' || *value == '\t') {
+            value++;
+        }
+
+        char *k_value = http_strdup(value);
+        if (!k_value) {
+            printf("[ERROR] Failed to allocate memory for header key");
+            free(line);
+            return -1;
+        }
+
+        if (http_kv_insert(req->headers, key, k_value) != 0) {
+            free(k_value);
+            free(line);
+            return -1;
         }
 
         free(line);
@@ -224,6 +392,8 @@ static void http_parse_headers(const char *headers, http_request_t *req) {
         }
         line_start = line_end + 2;
     }
+
+    return 0;
 }
 
 /* Parses query parameters and puts them into params map */
@@ -264,20 +434,6 @@ static void http_parse_params(const char *query, http_request_t *req) {
 }
 
 
-
-/* Allocates and copies request body */
-static void http_parse_body(const char *request, http_request_t *req) {
-    char *body = http_strstr(request, "\r\n\r\n");
-    if (body) {
-        body += 4; /* Skip past the "\r\n\r\n" */
-        req->body = http_strdup(body);
-        if (!req->body) {
-            printf("[ERROR] Failed to allocate body");
-        }
-    } else {
-        req->body = NULL;
-    }
-}
 
 /* Mainly parses the header of the HTTP request */
 static void http_parse_request(const char *request, http_request_t *req) {
@@ -375,7 +531,14 @@ static void http_parse_request(const char *request, http_request_t *req) {
 
         strncpy(headers, cursor, headers_length);
         headers[headers_length] = '\0';
-        http_parse_headers(headers, req);
+        if (http_parse_headers(headers, req) != 0) {
+            /* RFC 9112 §5: invalid header field syntax => 400 Bad Request. */
+            req->status = HTTP_400_BAD_REQUEST;
+            req->method = -1;
+            free(headers);
+            free(request_copy);
+            return;
+        }
         free(headers);
 
         cursor = headers_end + 4; /* Move past "\r\n\r\n" */
@@ -389,22 +552,54 @@ static void http_parse_request(const char *request, http_request_t *req) {
         http_parse_params(query, req);
     }
 
-    /* Parse body */
-    http_parse_body(cursor, req);
+    req->body = NULL;
+
+    /* RFC 9112 §6.1: Transfer-Encoding overrides Content-Length. */
+    const char *transfer_encoding = http_kv_get(req->headers, "Transfer-Encoding");
+    if (transfer_encoding) {
+        int is_chunked = 0;
+        int has_other = 0;
+        http_parse_transfer_encoding_value(transfer_encoding, &is_chunked, &has_other);
+        if (has_other) {
+            /* RFC 9112 §6.1: respond 501 to unsupported transfer codings. */
+            req->status = HTTP_501_NOT_IMPLEMENTED;
+            req->method = -1;
+            free(request_copy);
+            return;
+        }
+        req->transfer_encoding_chunked = is_chunked ? 1 : 0;
+    }
 
     /* Parse Content-Length */
     char *content_length_str = http_kv_get(req->headers, "Content-Length");
-    if (content_length_str) {
-        req->content_length = atoi(content_length_str);
+    if (content_length_str && !req->transfer_encoding_chunked) {
+        while (*content_length_str == ' ' || *content_length_str == '\t') {
+            content_length_str++;
+        }
+        char *endptr = NULL;
+        errno = 0;
+        unsigned long length = strtoul(content_length_str, &endptr, 10);
+        while (endptr && (*endptr == ' ' || *endptr == '\t')) {
+            endptr++;
+        }
+        if (errno != 0 || endptr == content_length_str || *endptr != '\0' || length > INT_MAX) {
+            req->status = HTTP_400_BAD_REQUEST;
+            req->method = -1;
+            free(request_copy);
+            return;
+        }
+        req->content_length = (int)length;
     } else {
         req->content_length = 0;
     }
 
     /* Parse Connection */
     const char *connection = http_kv_get(req->headers, "Connection");
-    if (connection && http_strcasecmp(connection, "keep-alive") == 0) {
+    /* RFC 9110 §7.6.1: Connection header is a list of tokens. */
+    if (connection && http_header_has_token(connection, "keep-alive")) {
         req->keep_alive = 1;
-    } else if (connection && http_strcasecmp(connection, "close") == 0) {
+    }
+    if (connection && http_header_has_token(connection, "close")) {
         req->close = 1;
     }
 
@@ -444,6 +639,107 @@ static void http_extract_field(const char *src, char *dst, int max_len) {
         i++;
     }
     dst[i] = '\0';  // Null-terminate
+}
+
+static int http_hex_value(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return 10 + (c - 'a');
+    }
+    if (c >= 'A' && c <= 'F') {
+        return 10 + (c - 'A');
+    }
+    return -1;
+}
+
+static int http_token_equals(const char *token, size_t token_len, const char *expected) {
+    size_t expected_len = strlen(expected);
+    if (token_len != expected_len) {
+        return 0;
+    }
+    for (size_t i = 0; i < token_len; i++) {
+        if (tolower((unsigned char)token[i]) != tolower((unsigned char)expected[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int http_parse_transfer_encoding_value(const char *value, int *is_chunked, int *has_other) {
+    const char *p = value;
+    *is_chunked = 0;
+    *has_other = 0;
+
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+
+        const char *token_start = p;
+        while (*p != '\0' && *p != ',') {
+            p++;
+        }
+        const char *token_end = p;
+        while (token_end > token_start && isspace((unsigned char)token_end[-1])) {
+            token_end--;
+        }
+        const char *semi = memchr(token_start, ';', (size_t)(token_end - token_start));
+        if (semi) {
+            token_end = semi;
+            while (token_end > token_start && isspace((unsigned char)token_end[-1])) {
+                token_end--;
+            }
+        }
+
+        size_t token_len = (size_t)(token_end - token_start);
+        if (token_len == 0) {
+            *has_other = 1;
+            continue;
+        }
+
+        if (http_token_equals(token_start, token_len, "chunked")) {
+            *is_chunked = 1;
+        } else if (http_token_equals(token_start, token_len, "identity")) {
+            /* identity is a no-op. */
+        } else {
+            *has_other = 1;
+        }
+    }
+
+    return 0;
+}
+
+static int http_header_has_token(const char *value, const char *token) {
+    const char *p = value;
+
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+
+        const char *token_start = p;
+        while (*p != '\0' && *p != ',') {
+            p++;
+        }
+        const char *token_end = p;
+        while (token_end > token_start && isspace((unsigned char)token_end[-1])) {
+            token_end--;
+        }
+
+        if (http_token_equals(token_start, (size_t)(token_end - token_start), token)) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 /**
@@ -509,6 +805,10 @@ static int http_extract_multipart_form_data(const char *body, const char *bounda
 
 /* Parses body data if its either multipart of x-www-form */
 int http_parse_data(http_request_t *req) {
+    if (!req->body) {
+        return 0;
+    }
+
     req->data = http_kv_create(32);
     if(!req->data) {
         printf("[ERROR] Failed to create map");
@@ -575,9 +875,7 @@ int http_parse(const char *request, http_request_t *req) {
         return -1;
     }
 
-    /**
-     * Requests MUST include the Host header field, and the server MUST reject requests without it (400 Bad Request).
-     */
+    /* RFC 9112 §3.2: HTTP/1.1 requests must include Host. */
     char* host = http_kv_get(req->headers, "Host");
     if (!host) {
         fprintf(stderr, "[ERROR] Host header not found\n");

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 
@@ -13,6 +14,60 @@
 #include <ws.h>
 
 #define WS_MAX_FRAME_SIZE 2048
+
+static int ws_strcasecmp(const char *a, const char *b) {
+    while (*a && *b) {
+        int ca = tolower((unsigned char)*a);
+        int cb = tolower((unsigned char)*b);
+        if (ca != cb) {
+            return ca - cb;
+        }
+        a++;
+        b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+static int ws_token_equals(const char *token, size_t token_len, const char *expected) {
+    size_t expected_len = strlen(expected);
+    if (token_len != expected_len) {
+        return 0;
+    }
+    for (size_t i = 0; i < token_len; i++) {
+        if (tolower((unsigned char)token[i]) != tolower((unsigned char)expected[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int ws_header_has_token(const char *value, const char *token) {
+    const char *p = value;
+
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+
+        const char *token_start = p;
+        while (*p != '\0' && *p != ',') {
+            p++;
+        }
+        const char *token_end = p;
+        while (token_end > token_start && isspace((unsigned char)token_end[-1])) {
+            token_end--;
+        }
+
+        if (ws_token_equals(token_start, (size_t)(token_end - token_start), token)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
 
 typedef enum {
     WS_OPCODE_CONTINUATION = 0x0,
@@ -367,7 +422,8 @@ int http_is_websocket_upgrade(http_request_t *req) {
     const char *connection = http_kv_get(req->headers, "Connection");
     const char *upgrade = http_kv_get(req->headers, "Upgrade");
 
-    if (connection && upgrade && strstr(connection, "Upgrade") && strcmp(upgrade, "websocket") == 0) {
+    /* RFC 6455 §4.2: "Upgrade: websocket" and "Connection: Upgrade". */
+    if (connection && upgrade && ws_header_has_token(connection, "upgrade") && ws_strcasecmp(upgrade, "websocket") == 0) {
         return 1;
     }
 

@@ -29,14 +29,14 @@ static int uuid_is_valid_str(const char *str) {
     return 1;
 }
 
-void uuid_clear(uuid_t *uuid) {
+void uuid_clear(cweb_uuid_t *uuid) {
     if (!uuid) {
         return;
     }
     uuid->str[0] = '\0';
 }
 
-int uuid_from_string(uuid_t *uuid, const char *str) {
+int uuid_from_string(cweb_uuid_t *uuid, const char *str) {
     if (!uuid || !str) {
         return -1;
     }
@@ -48,21 +48,21 @@ int uuid_from_string(uuid_t *uuid, const char *str) {
     return 0;
 }
 
-int uuid_is_valid(const uuid_t *uuid) {
+int uuid_is_valid(const cweb_uuid_t *uuid) {
     if (!uuid) {
         return 0;
     }
     return uuid_is_valid_str(uuid->str);
 }
 
-int uuid_equal(const uuid_t *a, const uuid_t *b) {
+int uuid_equal(const cweb_uuid_t *a, const cweb_uuid_t *b) {
     if (!a || !b) {
         return 0;
     }
     return strcmp(a->str, b->str) == 0;
 }
 
-const char *uuid_c_str(const uuid_t *uuid) {
+const char *uuid_c_str(const cweb_uuid_t *uuid) {
     if (!uuid) {
         return "";
     }

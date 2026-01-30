@@ -36,7 +36,9 @@ static void sqldb_bind_ops(struct sqldb *db) {
 static int db_exec(struct sqldb *db, const char *sql, int (*callback)(void *, int, char **, char **), void *data) {
     char *err_msg = 0;
     int rc = sqlite3_exec(db->db, sql, callback, data, &err_msg);
+#ifdef DB_SQL_TRACE
     printf("[SQL] %s\n", sql);
+#endif
     if (rc != SQLITE_OK) {
         fprintf(stderr, "SQL error: %s\n", err_msg);
         sqlite3_free(err_msg);
@@ -45,7 +47,9 @@ static int db_exec(struct sqldb *db, const char *sql, int (*callback)(void *, in
 }
 
 static int db_prepare(struct sqldb *db, const char *sql, int len, sqlite3_stmt **stmt, const char **tail) {
+#ifdef DB_SQL_TRACE
     printf("[SQL] %s\n", sql);
+#endif
     return sqlite3_prepare_v2(db->db, sql, len, stmt, tail);
 }
 

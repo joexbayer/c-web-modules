@@ -55,7 +55,8 @@ typedef enum http_error {
     HTTP_405_METHOD_NOT_ALLOWED,
     HTTP_409_CONFLICT,
     HTTP_414_URI_TOO_LONG,
-    HTTP_500_INTERNAL_SERVER_ERROR
+    HTTP_500_INTERNAL_SERVER_ERROR,
+    HTTP_501_NOT_IMPLEMENTED
 } http_error_t;
 extern const char *http_errors[];
 
@@ -74,6 +75,7 @@ typedef struct http_request {
     http_kv_store_t *data;
 
     int websocket;
+    int transfer_encoding_chunked;
 } http_request_t;
 
 typedef struct http_response {
@@ -93,5 +95,7 @@ typedef struct websocket {
 int http_parse(const char *request, http_request_t *req);
 int http_parse_data(http_request_t *req);
 int http_is_websocket_upgrade(http_request_t *req);
+/* Returns 0 on success, 1 if body is incomplete, -1 on error. */
+int http_decode_chunked_body(const char *body, size_t body_len, char **out, size_t *out_len);
 
 #endif // HTTP_H

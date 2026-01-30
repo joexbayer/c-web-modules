@@ -294,6 +294,26 @@ void thread_handle_client(void *arg) {
 
         buffer[read_size] = '\0';
 
+        char *header_end = strstr(buffer, "\r\n\r\n");
+        while (!header_end && read_size < (int)sizeof(buffer) - 1) {
+#ifdef PRODUCTION
+            ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
+#else
+            ret = (int)read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+#endif
+            if (ret <= 0) {
+                break;
+            }
+            read_size += ret;
+            buffer[read_size] = '\0';
+            header_end = strstr(buffer, "\r\n\r\n");
+        }
+
+        if (!header_end) {
+            dprintf(c->sockfd, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", http_errors[HTTP_400_BAD_REQUEST]);
+            goto thread_handle_client_exit;
+        }
+
         struct timespec start, end;
         clock_gettime(CLOCK_MONOTONIC, &start);
 
@@ -308,35 +328,80 @@ void thread_handle_client(void *arg) {
             goto thread_handle_client_exit;
         }
 
-        int request_too_large = req.content_length > (int)(sizeof(buffer) - 1);
+        size_t header_len = (size_t)(header_end - buffer) + 4;
+        size_t body_len_in_buffer = read_size > (int)header_len ? (size_t)(read_size - (int)header_len) : 0;
+        int request_too_large = 0;
+        int parse_error_status = 0;
 
-        while (req.content_length > read_size && read_size < (int)sizeof(buffer) - 1) {
+        if (req.transfer_encoding_chunked) {
+            /* RFC 9112 §7.1: chunked transfer coding */
+            char *decoded_body = NULL;
+            size_t decoded_len = 0;
+            int decode_status = http_decode_chunked_body(buffer + header_len, body_len_in_buffer, &decoded_body, &decoded_len);
+            while (decode_status == 1 && read_size < (int)sizeof(buffer) - 1) {
 #ifdef PRODUCTION
-            ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
+                ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
 #else
-            ret = (int)read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+                ret = (int)read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
 #endif
-            if (ret <= 0) {
-                break;
+                if (ret <= 0) {
+                    break;
+                }
+                read_size += ret;
+                buffer[read_size] = '\0';
+                body_len_in_buffer = read_size > (int)header_len ? (size_t)(read_size - (int)header_len) : 0;
+                decode_status = http_decode_chunked_body(buffer + header_len, body_len_in_buffer, &decoded_body, &decoded_len);
             }
 
-            read_size += ret;
-            buffer[read_size] = '\0';
-        }
-
-        char* body_ptr = strstr(buffer, "\r\n\r\n");
-        if (body_ptr) {
-            req.body = strdup(body_ptr + 4);
+            if (decode_status != 0) {
+                parse_error_status = HTTP_400_BAD_REQUEST;
+            } else if (decoded_len > INT_MAX) {
+                parse_error_status = HTTP_400_BAD_REQUEST;
+                free(decoded_body);
+            } else {
+                req.body = decoded_body;
+                req.content_length = (int)decoded_len;
+            }
         } else {
-            req.body = strdup("");
-        }
-        if (!req.body) {
-            perror("[ERROR] Failed to allocate request body");
-            thread_clean_up_request(&req);
-            goto thread_handle_client_exit;
+            if (req.content_length > (int)(sizeof(buffer) - header_len)) {
+                request_too_large = 1;
+            }
+
+            while (!request_too_large && body_len_in_buffer < (size_t)req.content_length &&
+                   read_size < (int)sizeof(buffer) - 1) {
+#ifdef PRODUCTION
+                ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
+#else
+                ret = (int)read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+#endif
+                if (ret <= 0) {
+                    break;
+                }
+                read_size += ret;
+                buffer[read_size] = '\0';
+                body_len_in_buffer = read_size > (int)header_len ? (size_t)(read_size - (int)header_len) : 0;
+            }
+
+            if (!request_too_large && body_len_in_buffer < (size_t)req.content_length) {
+                parse_error_status = HTTP_400_BAD_REQUEST;
+            }
+
+            size_t body_len = req.content_length > 0 ? (size_t)req.content_length : body_len_in_buffer;
+            req.body = malloc(body_len + 1);
+            if (!req.body) {
+                perror("[ERROR] Failed to allocate request body");
+                thread_clean_up_request(&req);
+                goto thread_handle_client_exit;
+            }
+            if (body_len > 0) {
+                memcpy(req.body, buffer + header_len, body_len);
+            }
+            req.body[body_len] = '\0';
         }
 
-        http_parse_data(&req);
+        if (!parse_error_status) {
+            http_parse_data(&req);
+        }
         close_connection = req.close;
 
         http_response_t res;
@@ -359,7 +424,11 @@ void thread_handle_client(void *arg) {
         res.status = HTTP_200_OK;
         res.body[0] = '\0';
 
-        if (request_too_large) {
+        if (parse_error_status) {
+            res.status = parse_error_status;
+            snprintf(res.body, HTTP_RESPONSE_SIZE, "Bad Request\n");
+            close_connection = 1;
+        } else if (request_too_large) {
             res.status = HTTP_414_URI_TOO_LONG;
             snprintf(res.body, HTTP_RESPONSE_SIZE, "Request too large\n");
             close_connection = 1;
