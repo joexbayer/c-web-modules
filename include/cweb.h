@@ -26,7 +26,7 @@ struct job_system;
 typedef int (*jobs_create_fn_t)(void *user_data,
     const char *job_name,
     const char *payload_json,
-    uuid_t *job_uuid_out);
+    cweb_uuid_t *job_uuid_out);
 
 typedef struct cweb_context {
     struct container *cache;
@@ -96,6 +96,6 @@ typedef struct module {
 } module_t;
 
 void jobs_bind(jobs_create_fn_t fn, void *user_data);
-int jobs_create(const char *job_name, const char *payload_json, uuid_t *job_uuid_out);
+int jobs_create(const char *job_name, const char *payload_json, cweb_uuid_t *job_uuid_out);
 
 #endif // CWEB_H
