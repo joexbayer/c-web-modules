@@ -5,6 +5,7 @@
 #include <time.h>
 #include "pool.h"
 #include <errno.h>
+#include <string.h>
 
 static void *thread_pool_worker(void *arg);
 
@@ -49,6 +50,15 @@ struct thread_pool *thread_pool_init(int num_threads) {
     for (int i = 0; i < num_threads; i++) {
         if (pthread_create(&pool->threads[i], NULL, thread_pool_worker, pool) != 0) {
             fprintf(stderr, "[ERROR] Failed to create thread %d\n", i);
+            pthread_mutex_lock(&pool->lock);
+            atomic_store(&pool->stop, 1);
+            pthread_cond_broadcast(&pool->cond);
+            pthread_mutex_unlock(&pool->lock);
+
+            for (int j = 0; j < i; j++) {
+                pthread_join(pool->threads[j], NULL);
+            }
+
             free(pool->threads);
             pthread_cond_destroy(&pool->cond);
             pthread_mutex_destroy(&pool->lock);
@@ -69,40 +79,43 @@ static void cleanup_unlock(void *arg) {
 static void *thread_pool_worker(void *arg) {
     struct thread_pool *pool = (struct thread_pool *)arg;
 
-    pthread_cleanup_push(cleanup_unlock, &pool->lock);
-
     while (1) {
+        struct task *task = NULL;
+        int should_stop = 0;
         pthread_mutex_lock(&pool->lock);
+        pthread_cleanup_push(cleanup_unlock, &pool->lock);
 
         while (pool->task_queue == NULL && !atomic_load(&pool->stop)) {
             pthread_cond_wait(&pool->cond, &pool->lock);
         }
 
         if (atomic_load(&pool->stop) && pool->task_queue == NULL) {
-            pthread_mutex_unlock(&pool->lock);
+            should_stop = 1;
+        } else {
+            task = pool->task_queue;
+            if (task) {
+                pool->task_queue = task->next;
+                if (pool->task_queue == NULL) {
+                    pool->task_tail = NULL;
+                }
+                pool->queue_length--;
+                atomic_fetch_add(&pool->active_threads, 1);
+            }
+        }
+
+        pthread_cleanup_pop(1);
+
+        if (should_stop) {
             break;
         }
 
-        struct task *task = pool->task_queue;
-        if (task != NULL) {
-            pool->task_queue = task->next;
-            if (pool->task_queue == NULL) {
-                pool->task_tail = NULL;
-            }
-            pool->queue_length--;
-            atomic_fetch_add(&pool->active_threads, 1);
-        }
-
-        pthread_mutex_unlock(&pool->lock);
-
-        if (task != NULL) {
+        if (task) {
             task->function(task->arg);
             atomic_fetch_sub(&pool->active_threads, 1);
             free(task);
         }
     }
 
-    pthread_cleanup_pop(1);
     return NULL;
 }
 

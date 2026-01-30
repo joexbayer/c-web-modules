@@ -1,4 +1,5 @@
 #include <jobs.h>
+#include <engine.h>
 
 #include <jansson.h>
 #include <openssl/rand.h>
@@ -463,6 +464,9 @@ static int jobs_ctx_set_result(job_ctx_t *job, const char *result_json) {
     }
 
     job_runtime_t *runtime = jobs_runtime_from_ctx(job);
+    if (runtime->completed) {
+        return -1;
+    }
     runtime->completed = 1;
 
     if (jobs_update_state(runtime->jobs, runtime->job_id, JOB_STATE_DONE, result_json, NULL) != 0) {
@@ -478,6 +482,9 @@ static int jobs_ctx_set_error(job_ctx_t *job, const char *error_text) {
     }
 
     job_runtime_t *runtime = jobs_runtime_from_ctx(job);
+    if (runtime->completed) {
+        return -1;
+    }
     runtime->completed = 1;
 
     if (jobs_update_state(runtime->jobs, runtime->job_id, JOB_STATE_FAILED, NULL, error_text) != 0) {
@@ -523,8 +530,11 @@ static void jobs_execute(void *data) {
         return;
     }
 
-    int rc = work->job->run(work->ctx, &payload, &runtime.api);
-    if (rc != 0 && !runtime.completed) {
+    int rc = 0;
+    int exec_rc = safe_execute_job_run(work->job->run, work->ctx, &payload, &runtime.api, &rc);
+    if (exec_rc != 0 && !runtime.completed) {
+        jobs_ctx_set_error(&runtime.api, "job crashed");
+    } else if (rc != 0 && !runtime.completed) {
         jobs_ctx_set_error(&runtime.api, "job failed");
     } else if (!runtime.completed) {
         jobs_ctx_set_result(&runtime.api, "{}");
@@ -588,6 +598,9 @@ static int jobs_fetch_job_id(job_system_t *jobs, const char *job_uuid, int *job_
 }
 
 static int jobs_respond_error(http_response_t *res, int status, const char *message) {
+    if (!res || !res->body || !res->headers) {
+        return -1;
+    }
     json_t *root = json_object();
     json_object_set_new(root, "error", json_string(message ? message : "unknown"));
     char *payload = json_dumps(root, JSON_COMPACT);
@@ -806,7 +819,15 @@ const websocket_info_t *jobs_ws_info(job_system_t *jobs) {
 }
 
 static int jobs_handle_create(job_system_t *jobs, struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
-    if (!jobs || !ctx || !req || !res) {
+    if (!jobs || !ctx || !req || !res || !res->body) {
+        return -1;
+    }
+
+    if (!req->body) {
+        return jobs_respond_error(res, HTTP_400_BAD_REQUEST, "missing body");
+    }
+
+    if (!res->headers) {
         return -1;
     }
 
@@ -999,6 +1020,9 @@ int jobs_create_impl(void *user_data,
 }
 
 static int jobs_handle_status(job_system_t *jobs, http_response_t *res, const char *job_uuid) {
+    if (!res || !res->body || !res->headers) {
+        return -1;
+    }
     sqlite3_stmt *stmt = NULL;
     const char *sql = "SELECT module_name, job_name, state, module_hash, created_at, updated_at, result_json, error_text FROM jobs WHERE uuid = ?";
     if (jobs_db_prepare(jobs->db, sql, &stmt) != 0) {
@@ -1063,6 +1087,9 @@ static int jobs_handle_status(job_system_t *jobs, http_response_t *res, const ch
 }
 
 static int jobs_handle_cancel(job_system_t *jobs, struct cweb_context *ctx, http_response_t *res, const char *job_uuid) {
+    if (!res || !res->body || !res->headers) {
+        return -1;
+    }
     sqlite3_stmt *stmt = NULL;
     const char *sql = "SELECT module_name, job_name, state, id FROM jobs WHERE uuid = ?";
     if (jobs_db_prepare(jobs->db, sql, &stmt) != 0) {
@@ -1090,7 +1117,7 @@ static int jobs_handle_cancel(job_system_t *jobs, struct cweb_context *ctx, http
 
     struct job_route job_route = router_job_find(jobs->router, module_name ? module_name : "", job_name ? job_name : "");
     if (job_route.job && job_route.job->cancel) {
-        job_route.job->cancel(ctx, job_uuid);
+        safe_execute_job_cancel(job_route.job->cancel, ctx, job_uuid);
     }
     if (job_route.job) {
         router_job_release(jobs->router, job_route.ref, ctx);
@@ -1114,6 +1141,9 @@ static int jobs_handle_cancel(job_system_t *jobs, struct cweb_context *ctx, http
 }
 
 static int jobs_handle_list(job_system_t *jobs, http_request_t *req, http_response_t *res) {
+    if (!req || !res || !res->body || !res->headers) {
+        return -1;
+    }
     const char *state = http_kv_get(req->params, "state");
     sqlite3_stmt *stmt = NULL;
     const char *sql_with_state = "SELECT uuid, state, module_name, job_name, module_hash, updated_at FROM jobs WHERE state = ? ORDER BY updated_at DESC LIMIT ?";
@@ -1171,7 +1201,7 @@ static int jobs_handle_list(job_system_t *jobs, http_request_t *req, http_respon
 }
 
 int jobs_handle_http(job_system_t *jobs, struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
-    if (!jobs || !req || !res) {
+    if (!jobs || !req || !res || !req->path) {
         return 0;
     }
 
