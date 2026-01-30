@@ -31,6 +31,7 @@ static const char* allowed_ip_prefixes[] = {
 
 void server_load_shutdown_policy(struct server_state *state);
 void server_set_shutdown_policy(struct server_state *state, shutdown_policy_t policy);
+void server_load_request_limits(struct server_state *state);
 void server_load_auth_config(struct server_state *state);
 void server_set_cors_defaults(struct server_state *state);
 int server_init_services(struct server_state *state);
@@ -71,6 +72,7 @@ int main(int argc, char *argv[]) {
     state.config.environment = DEV;
 #endif
     server_load_shutdown_policy(&state);
+    server_load_request_limits(&state);
     server_load_auth_config(&state);
     server_set_cors_defaults(&state);
 

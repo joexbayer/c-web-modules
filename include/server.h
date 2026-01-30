@@ -49,6 +49,7 @@ struct server_config {
     shutdown_policy_t shutdown_policy;
     const char *admin_key;
     size_t admin_key_len;
+    size_t max_body_bytes;
     char module_dir[SO_PATH_MAX_LEN];
     int purge_modules;
     cors_config_t cors;

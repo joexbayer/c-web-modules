@@ -1,5 +1,6 @@
 #include "server.h"
 #include <arpa/inet.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,23 @@ void server_load_shutdown_policy(struct server_state *state) {
 
 void server_set_shutdown_policy(struct server_state *state, shutdown_policy_t policy) {
     state->config.shutdown_policy = policy;
+}
+
+void server_load_request_limits(struct server_state *state) {
+    state->config.max_body_bytes = DEFAULT_MAX_BODY_BYTES;
+
+    const char *max_body_env = getenv("CWEB_MAX_BODY_BYTES");
+    if (max_body_env && max_body_env[0] != '\0') {
+        char *endptr = NULL;
+        errno = 0;
+        unsigned long long value = strtoull(max_body_env, &endptr, 10);
+        while (endptr && (*endptr == ' ' || *endptr == '\t')) {
+            endptr++;
+        }
+        if (errno == 0 && endptr && *endptr == '\0' && value > 0 && value <= SIZE_MAX) {
+            state->config.max_body_bytes = (size_t)value;
+        }
+    }
 }
 
 void server_load_auth_config(struct server_state *state) {

@@ -330,6 +330,7 @@ void thread_handle_client(void *arg) {
 
         size_t header_len = (size_t)(header_end - buffer) + 4;
         size_t body_len_in_buffer = read_size > (int)header_len ? (size_t)(read_size - (int)header_len) : 0;
+        size_t max_body_bytes = state->config.max_body_bytes;
         int request_too_large = 0;
         int parse_error_status = 0;
 
@@ -351,18 +352,33 @@ void thread_handle_client(void *arg) {
                 buffer[read_size] = '\0';
                 body_len_in_buffer = read_size > (int)header_len ? (size_t)(read_size - (int)header_len) : 0;
                 decode_status = http_decode_chunked_body(buffer + header_len, body_len_in_buffer, &decoded_body, &decoded_len);
+                if (max_body_bytes > 0 && decoded_len > max_body_bytes) {
+                    request_too_large = 1;
+                    break;
+                }
             }
 
-            if (decode_status != 0) {
+            if (request_too_large) {
+                parse_error_status = HTTP_413_PAYLOAD_TOO_LARGE;
+                free(decoded_body);
+            } else if (decode_status != 0) {
                 parse_error_status = HTTP_400_BAD_REQUEST;
+                free(decoded_body);
             } else if (decoded_len > INT_MAX) {
                 parse_error_status = HTTP_400_BAD_REQUEST;
+                free(decoded_body);
+            } else if (max_body_bytes > 0 && decoded_len > max_body_bytes) {
+                parse_error_status = HTTP_413_PAYLOAD_TOO_LARGE;
                 free(decoded_body);
             } else {
                 req.body = decoded_body;
                 req.content_length = (int)decoded_len;
             }
         } else {
+            if (max_body_bytes > 0 && req.content_length > 0 &&
+                (size_t)req.content_length > max_body_bytes) {
+                request_too_large = 1;
+            }
             if (req.content_length > (int)(sizeof(buffer) - header_len)) {
                 request_too_large = 1;
             }
@@ -386,17 +402,19 @@ void thread_handle_client(void *arg) {
                 parse_error_status = HTTP_400_BAD_REQUEST;
             }
 
-            size_t body_len = req.content_length > 0 ? (size_t)req.content_length : body_len_in_buffer;
-            req.body = malloc(body_len + 1);
-            if (!req.body) {
-                perror("[ERROR] Failed to allocate request body");
-                thread_clean_up_request(&req);
-                goto thread_handle_client_exit;
+            if (!request_too_large && !parse_error_status) {
+                size_t body_len = req.content_length > 0 ? (size_t)req.content_length : body_len_in_buffer;
+                req.body = malloc(body_len + 1);
+                if (!req.body) {
+                    perror("[ERROR] Failed to allocate request body");
+                    thread_clean_up_request(&req);
+                    goto thread_handle_client_exit;
+                }
+                if (body_len > 0) {
+                    memcpy(req.body, buffer + header_len, body_len);
+                }
+                req.body[body_len] = '\0';
             }
-            if (body_len > 0) {
-                memcpy(req.body, buffer + header_len, body_len);
-            }
-            req.body[body_len] = '\0';
         }
 
         if (!parse_error_status) {
@@ -426,11 +444,15 @@ void thread_handle_client(void *arg) {
 
         if (parse_error_status) {
             res.status = parse_error_status;
-            snprintf(res.body, HTTP_RESPONSE_SIZE, "Bad Request\n");
+            if (parse_error_status == HTTP_413_PAYLOAD_TOO_LARGE) {
+                snprintf(res.body, HTTP_RESPONSE_SIZE, "Payload too large\n");
+            } else {
+                snprintf(res.body, HTTP_RESPONSE_SIZE, "Bad Request\n");
+            }
             close_connection = 1;
         } else if (request_too_large) {
-            res.status = HTTP_414_URI_TOO_LONG;
-            snprintf(res.body, HTTP_RESPONSE_SIZE, "Request too large\n");
+            res.status = HTTP_413_PAYLOAD_TOO_LARGE;
+            snprintf(res.body, HTTP_RESPONSE_SIZE, "Payload too large\n");
             close_connection = 1;
         } else {
             gateway(state, c->sockfd, &req, &res);

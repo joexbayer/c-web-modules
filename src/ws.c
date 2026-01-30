@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <stdint.h>
 
 #include <http.h>
 #include <list.h>
@@ -67,6 +68,54 @@ static int ws_header_has_token(const char *value, const char *token) {
     }
 
     return 0;
+}
+
+static void ws_trim_ows(const char **value, size_t *len) {
+    const char *start = *value;
+    size_t length = *len;
+
+    while (length > 0 && (*start == ' ' || *start == '\t')) {
+        start++;
+        length--;
+    }
+
+    while (length > 0 && (start[length - 1] == ' ' || start[length - 1] == '\t')) {
+        length--;
+    }
+
+    *value = start;
+    *len = length;
+}
+
+static int ws_is_base64_char(char c) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+        return 1;
+    }
+    return c == '+' || c == '/' || c == '=';
+}
+
+static int ws_is_valid_key(const char *key) {
+    if (!key) {
+        return 0;
+    }
+
+    size_t len = strlen(key);
+    ws_trim_ows(&key, &len);
+    if (len != 24) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        if (!ws_is_base64_char(key[i])) {
+            return 0;
+        }
+    }
+
+    if (key[22] != '=' || key[23] != '=') {
+        return 0;
+    }
+
+    return 1;
 }
 
 typedef enum {
@@ -268,20 +317,67 @@ int ws_update_container(struct ws_server *server, const char* path, struct ws_in
 static ws_frame_status_t ws_decode_frame(const unsigned char *data, size_t data_len, websocket_frame_t *frame) {
     if (data_len < 2) return WS_FRAME_INCOMPLETE;
 
+    /* RFC 6455 §5.2: RSV1-3 must be 0 unless negotiated. */
+    if ((data[0] & 0x70) != 0) {
+        return WS_FRAME_ERROR;
+    }
+
     frame->fin = (data[0] & 0x80) != 0;
     frame->opcode = data[0] & 0x0F;
     frame->masked = (data[1] & 0x80) != 0;
     frame->payload_len = data[1] & 0x7F;
 
+    /* RFC 6455 §5.2: client-to-server frames MUST be masked. */
+    if (!frame->masked) {
+        return WS_FRAME_ERROR;
+    }
+
+    /* RFC 6455 §5.2: no fragmentation support in this implementation. */
+    if (!frame->fin || frame->opcode == WS_OPCODE_CONTINUATION) {
+        return WS_FRAME_ERROR;
+    }
+
+    /* RFC 6455 §5.2: validate opcode. */
+    if (frame->opcode != WS_OPCODE_TEXT &&
+        frame->opcode != WS_OPCODE_BINARY &&
+        frame->opcode != WS_OPCODE_CLOSE &&
+        frame->opcode != WS_OPCODE_PING &&
+        frame->opcode != WS_OPCODE_PONG) {
+        return WS_FRAME_ERROR;
+    }
+
     size_t offset = 2;
     if (frame->payload_len == 126) {
         if (data_len < 4) return WS_FRAME_INCOMPLETE;
-        frame->payload_len = (data[2] << 8) | data[3];
+        frame->payload_len = (uint64_t)((data[2] << 8) | data[3]);
         offset += 2;
     } else if (frame->payload_len == 127) {
         if (data_len < 10) return WS_FRAME_INCOMPLETE;
-        frame->payload_len = 0;
+        uint64_t length = 0;
+        for (int i = 0; i < 8; i++) {
+            length = (length << 8) | data[2 + i];
+        }
+        if (length > SIZE_MAX) {
+            return WS_FRAME_ERROR;
+        }
+        frame->payload_len = length;
         offset += 8;
+    }
+
+    if (frame->payload_len > WS_MAX_FRAME_SIZE) {
+        return WS_FRAME_ERROR;
+    }
+
+    if (frame->opcode == WS_OPCODE_CLOSE || frame->opcode == WS_OPCODE_PING || frame->opcode == WS_OPCODE_PONG) {
+        /* RFC 6455 §5.5: control frames must be <=125 and not fragmented. */
+        if (frame->payload_len > 125) {
+            return WS_FRAME_ERROR;
+        }
+    }
+
+    if (frame->opcode == WS_OPCODE_CLOSE && frame->payload_len == 1) {
+        /* RFC 6455 §5.5.1: close payload length is 0 or >= 2. */
+        return WS_FRAME_ERROR;
     }
 
     if (frame->masked) {
@@ -292,9 +388,12 @@ static ws_frame_status_t ws_decode_frame(const unsigned char *data, size_t data_
 
     if (data_len < offset + frame->payload_len) return WS_FRAME_INCOMPLETE;
 
-    frame->payload = malloc(frame->payload_len);
-    if (!frame->payload) return WS_FRAME_ERROR;
-    memcpy(frame->payload, &data[offset], frame->payload_len);
+    frame->payload = NULL;
+    if (frame->payload_len > 0) {
+        frame->payload = malloc(frame->payload_len);
+        if (!frame->payload) return WS_FRAME_ERROR;
+        memcpy(frame->payload, &data[offset], frame->payload_len);
+    }
 
     if (frame->masked) {
         for (size_t i = 0; i < frame->payload_len; i++) {
@@ -352,9 +451,11 @@ static void ws_handle_frames(struct ws_container container[static 1]) {
     }
 
     websocket_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
     ws_frame_status_t status = ws_decode_frame(buffer, (size_t)received, &frame);
     if (status == WS_FRAME_COMPLETE) {
         if (frame.opcode == WS_OPCODE_CLOSE) {
+            ws_send_frame(ws->client_fd, "", 0, WS_OPCODE_CLOSE);
             if (info->on_close) info->on_close(ctx, ws);
             pthread_mutex_unlock(&container->mutex);
             ws_free_frame(&frame);
@@ -375,8 +476,14 @@ static void ws_handle_frames(struct ws_container container[static 1]) {
         }
         ws_free_frame(&frame);
     } else if (status == WS_FRAME_ERROR) {
+        /* RFC 6455 §5.5.1: close connection on protocol error. */
         fprintf(stderr, "[ERROR] Error decoding WebSocket frame\n");
+        ws_send_frame(ws->client_fd, "", 0, WS_OPCODE_CLOSE);
         ws_free_frame(&frame);
+        if (info->on_close) info->on_close(ctx, ws);
+        pthread_mutex_unlock(&container->mutex);
+        ws_container_destroy(container);
+        return;
     } else {
         fprintf(stderr, "[ERROR] Incomplete WebSocket frame\n");
         ws_free_frame(&frame);
@@ -444,9 +551,31 @@ int ws_confirm_open(struct ws_server *server, struct cweb_context *ctx, int sd) 
 void ws_handle_client(struct ws_server *server, struct cweb_context *ctx, int sd, http_request_t *req, http_response_t *res, struct ws_info *info) {
     printf("[WS] Upgrading connection to WebSocket %d\n", sd);
 
+    /* RFC 6455 §4.2: WebSocket handshake uses GET and HTTP/1.1. */
+    if (req->method != HTTP_GET || req->version != HTTP_VERSION_1_1 || !http_is_websocket_upgrade(req)) {
+        res->status = HTTP_400_BAD_REQUEST;
+        return;
+    }
+
+    const char *version = http_kv_get(req->headers, "Sec-WebSocket-Version");
+    if (!version) {
+        res->status = HTTP_426_UPGRADE_REQUIRED;
+        http_kv_insert(res->headers, "Sec-WebSocket-Version", strdup("13"));
+        return;
+    }
+    size_t version_len = strlen(version);
+    ws_trim_ows(&version, &version_len);
+    if (version_len != 2 || strncmp(version, "13", version_len) != 0) {
+        /* RFC 6455 §4.4: respond 426 and include Sec-WebSocket-Version: 13. */
+        res->status = HTTP_426_UPGRADE_REQUIRED;
+        http_kv_insert(res->headers, "Sec-WebSocket-Version", strdup("13"));
+        return;
+    }
+
     const char *client_key = http_kv_get(req->headers, "Sec-WebSocket-Key");
-    if (!client_key) {
-        fprintf(stderr, "[ERROR] Missing Sec-WebSocket-Key header\n");
+    /* RFC 6455 §4.2: Sec-WebSocket-Key must be a base64 value. */
+    if (!client_key || !ws_is_valid_key(client_key)) {
+        fprintf(stderr, "[ERROR] Invalid Sec-WebSocket-Key header\n");
         res->status = HTTP_400_BAD_REQUEST;
         return;
     }

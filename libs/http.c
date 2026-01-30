@@ -169,7 +169,8 @@ const char *http_errors[] = {
     "101 Switching Protocols",
     "200 OK",
     "302 Found",
-    "400 Bad Request", "401 Unauthorized", "403 Forbidden", "404 Not Found", "405 Method Not Allowed", "409 Conflict", "414 URI Too Long",
+    "400 Bad Request", "401 Unauthorized", "403 Forbidden", "404 Not Found", "405 Method Not Allowed", "409 Conflict", "413 Payload Too Large", "414 URI Too Long",
+    "426 Upgrade Required",
     "500 Internal Server Error",
     "501 Not Implemented"
 };
