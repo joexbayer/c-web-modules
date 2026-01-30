@@ -12,6 +12,8 @@ static int http_parse_transfer_encoding_value(const char *value, int *is_chunked
 static int http_header_has_token(const char *value, const char *token);
 static const char *http_find_crlf(const char *buf, size_t len);
 static const char *http_find_crlfcrlf(const char *buf, size_t len);
+static int http_validate_trailer_fields(const char *trailers, size_t len);
+static const char *http_find_char(const char *buf, size_t len, char c);
 
 static char* http_strstr(const char *str, const char *substr) {
     const char *p = str;
@@ -183,39 +185,98 @@ static void trim_trailing_whitespace(char *str) {
     }
 }
 
-/* Parse HTTP method */
-static void http_parse_method(const char *method, http_request_t *req) {
-    if (strncmp(method, "GET", 3) == 0) {
+/* Parse HTTP method token (length-bounded) */
+static int http_parse_method_token(const char *method, size_t len, http_request_t *req) {
+    if (len == 3 && memcmp(method, "GET", 3) == 0) {
         req->method = HTTP_GET;
-    } else if (strncmp(method, "POST", 4) == 0) {
+    } else if (len == 4 && memcmp(method, "POST", 4) == 0) {
         req->method = HTTP_POST;
-    } else if (strncmp(method, "PUT", 3) == 0) {
+    } else if (len == 3 && memcmp(method, "PUT", 3) == 0) {
         req->method = HTTP_PUT;
-    } else if (strncmp(method, "DELETE", 6) == 0) {
+    } else if (len == 6 && memcmp(method, "DELETE", 6) == 0) {
         req->method = HTTP_DELETE;
-    } else if (strncmp(method, "OPTIONS", 7) == 0) {
+    } else if (len == 7 && memcmp(method, "OPTIONS", 7) == 0) {
         req->method = HTTP_OPTIONS;
     } else {
         req->method = -1;
     }
+    return req->method == -1 ? -1 : 0;
 }
 
-static int http_header_name_invalid(const char *name) {
-    /* RFC 9110 §5.1: field-name is a token; no whitespace allowed. */
-    if (!name || *name == '\0') {
+static int http_is_tchar(unsigned char c) {
+    if (isalnum(c)) {
         return 1;
     }
-    for (const char *p = name; *p != '\0'; p++) {
-        if (*p == ' ' || *p == '\t') {
+    switch (c) {
+        case '!':
+        case '#':
+        case '$':
+        case '%':
+        case '&':
+        case '\'':
+        case '*':
+        case '+':
+        case '-':
+        case '.':
+        case '^':
+        case '_':
+        case '`':
+        case '|':
+        case '~':
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int http_header_name_invalid_range(const char *name, size_t len) {
+    /* RFC 9110 §5.1: field-name is a token. */
+    if (!name || len == 0) {
+        return 1;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (!http_is_tchar(c)) {
             return 1;
         }
     }
     return 0;
 }
 
+static int http_header_name_invalid(const char *name) {
+    return http_header_name_invalid_range(name, strlen(name));
+}
+
+static int http_header_value_invalid_range(const char *value, size_t len) {
+    /* RFC 9110 §5.5: no CTL in field values. HTAB is allowed. */
+    if (!value) {
+        return 1;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)value[i];
+        if ((c < 0x20 && c != '\t') || c == 0x7f) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int http_header_value_invalid(const char *value) {
+    return http_header_value_invalid_range(value, strlen(value));
+}
+
 static const char *http_find_crlf(const char *buf, size_t len) {
     for (size_t i = 0; i + 1 < len; i++) {
         if (buf[i] == '\r' && buf[i + 1] == '\n') {
+            return buf + i;
+        }
+    }
+    return NULL;
+}
+
+static const char *http_find_char(const char *buf, size_t len, char c) {
+    for (size_t i = 0; i < len; i++) {
+        if (buf[i] == c) {
             return buf + i;
         }
     }
@@ -293,6 +354,10 @@ int http_decode_chunked_body(const char *body, size_t body_len, char **out, size
                 free(decoded);
                 return 1;
             }
+            if (http_validate_trailer_fields(body + pos, (size_t)(trail_end - (body + pos)) + 2) != 0) {
+                free(decoded);
+                return -1;
+            }
             decoded[decoded_len] = '\0';
             *out = decoded;
             *out_len = decoded_len;
@@ -325,23 +390,155 @@ int http_decode_chunked_body(const char *body, size_t body_len, char **out, size
 }
 
 /* Parses HTTP headers and puts them into headers map */
-static int http_parse_headers(const char *headers, http_request_t *req) {
-    const char *line_start = headers;
+typedef struct http_header_parse_state {
+    int content_length_seen;
+    int content_length_value;
+    int content_length_conflict;
+    int host_seen;
+    int host_conflict;
+    int host_empty;
+    int te_invalid;
+} http_header_parse_state_t;
 
-    while (*line_start != '\0') {
-        const char *line_end = http_strstr(line_start, "\r\n");
-        if (!line_end) {
-            line_end = line_start + strlen(line_start);
+static int http_parse_content_length_list(const char *value, http_header_parse_state_t *state) {
+    const char *p = value;
+
+    if (http_header_value_invalid(value)) {
+        return -1;
+    }
+
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
         }
 
-        /* Calculate line length and copy it into a temporary buffer */
-        size_t line_length = line_end - line_start;
+        const char *token_start = p;
+        while (*p != '\0' && *p != ',') {
+            p++;
+        }
+        const char *token_end = p;
+        while (token_end > token_start && (token_end[-1] == ' ' || token_end[-1] == '\t')) {
+            token_end--;
+        }
+
+        if (token_end == token_start) {
+            return -1;
+        }
+
+        unsigned long value_num = 0;
+        for (const char *t = token_start; t < token_end; t++) {
+            if (*t < '0' || *t > '9') {
+                return -1;
+            }
+            if (value_num > (unsigned long)INT_MAX / 10) {
+                return -1;
+            }
+            value_num = value_num * 10 + (unsigned long)(*t - '0');
+            if (value_num > (unsigned long)INT_MAX) {
+                return -1;
+            }
+        }
+
+        if (!state->content_length_seen) {
+            state->content_length_seen = 1;
+            state->content_length_value = (int)value_num;
+        } else if (state->content_length_value != (int)value_num) {
+            state->content_length_conflict = 1;
+        }
+    }
+
+    return 0;
+}
+
+static void http_trim_ows_range(const char **value, size_t *len) {
+    const char *start = *value;
+    const char *end = start + *len;
+    while (start < end && (*start == ' ' || *start == '\t')) {
+        start++;
+    }
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
+        end--;
+    }
+    *value = start;
+    *len = (size_t)(end - start);
+}
+
+static int http_value_equals_case_insensitive(const char *a, size_t a_len, const char *b, size_t b_len) {
+    if (a_len != b_len) {
+        return 0;
+    }
+    for (size_t i = 0; i < a_len; i++) {
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int http_parse_te_header(const char *value) {
+    const char *p = value;
+
+    if (http_header_value_invalid(value)) {
+        return -1;
+    }
+
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+
+        const char *token_start = p;
+        while (*p != '\0' && *p != ',') {
+            p++;
+        }
+        const char *token_end = p;
+        while (token_end > token_start && (token_end[-1] == ' ' || token_end[-1] == '\t')) {
+            token_end--;
+        }
+        if (token_end == token_start) {
+            return -1;
+        }
+
+        const char *semi = memchr(token_start, ';', (size_t)(token_end - token_start));
+        if (semi != NULL) {
+            return -1;
+        }
+
+        if (!http_value_equals_case_insensitive(token_start, (size_t)(token_end - token_start), "trailers", 8)) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int http_parse_headers(const char *headers, size_t headers_len, http_request_t *req, http_header_parse_state_t *state) {
+    const char *line_start = headers;
+    const char *headers_end = headers + headers_len;
+
+    while (line_start < headers_end) {
+        const char *line_end = http_find_crlf(line_start, (size_t)(headers_end - line_start));
+        if (!line_end) {
+            return -1;
+        }
+
+        size_t line_length = (size_t)(line_end - line_start);
+        if (line_length == 0) {
+            return -1;
+        }
+
         char *line = malloc(line_length + 1);
         if (!line) {
             printf("[ERROR] Failed to allocate memory for header line");
             return -1;
         }
-        strncpy(line, line_start, line_length);
+        memcpy(line, line_start, line_length);
         line[line_length] = '\0';
 
         /* RFC 9112 §5.1: obs-fold is invalid; reject header lines starting with SP/HTAB. */
@@ -350,7 +547,7 @@ static int http_parse_headers(const char *headers, http_request_t *req) {
             return -1;
         }
 
-        char *colon = http_strchr(line, ':');
+        char *colon = memchr(line, ':', line_length);
         if (!colon) {
             free(line);
             return -1;
@@ -364,13 +561,55 @@ static int http_parse_headers(const char *headers, http_request_t *req) {
             return -1;
         }
 
+        while (*value == ' ' || *value == '\t') {
+            value++;
+        }
+
+        if (http_header_value_invalid(value)) {
+            free(line);
+            return -1;
+        }
+
+        if (http_strcasecmp(key, "Host") == 0) {
+            const char *host_value = value;
+            size_t host_len = strlen(host_value);
+            http_trim_ows_range(&host_value, &host_len);
+            if (host_len == 0) {
+                state->host_empty = 1;
+            } else if (!state->host_seen) {
+                state->host_seen = 1;
+                /* store first host value by letting it fall through */
+            } else {
+                char *existing = http_kv_get(req->headers, "Host");
+                if (existing) {
+                    const char *existing_trim = existing;
+                    size_t existing_len = strlen(existing_trim);
+                    http_trim_ows_range(&existing_trim, &existing_len);
+                    if (!http_value_equals_case_insensitive(existing_trim, existing_len, host_value, host_len)) {
+                        state->host_conflict = 1;
+                    }
+                } else {
+                    state->host_conflict = 1;
+                }
+            }
+        }
+
+        if (http_strcasecmp(key, "Content-Length") == 0) {
+            if (http_parse_content_length_list(value, state) != 0) {
+                free(line);
+                return -1;
+            }
+        }
+
+        if (http_strcasecmp(key, "TE") == 0) {
+            if (http_parse_te_header(value) != 0) {
+                state->te_invalid = 1;
+            }
+        }
+
         if (http_kv_get(req->headers, key) != NULL) {
             free(line);
             continue;
-        }
-
-        while (*value == ' ' || *value == '\t') {
-            value++;
         }
 
         char *k_value = http_strdup(value);
@@ -388,9 +627,6 @@ static int http_parse_headers(const char *headers, http_request_t *req) {
 
         free(line);
 
-        if (*line_end == '\0') {
-            break;
-        }
         line_start = line_end + 2;
     }
 
@@ -436,116 +672,120 @@ static void http_parse_params(const char *query, http_request_t *req) {
 
 
 
-/* Mainly parses the header of the HTTP request */
-static void http_parse_request(const char *request, http_request_t *req) {
-    char *request_copy = http_strdup(request);
-    if (!request_copy) {
-        printf("[ERROR] Failed to allocate request copy");
+/* Mainly parses the header of the HTTP request (length-bounded) */
+static void http_parse_request(const char *request, size_t request_len, http_request_t *req) {
+    if (!request || request_len == 0) {
+        req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
         return;
     }
 
-    char *cursor = request_copy;
+    const char *line_end = http_find_crlf(request, request_len);
+    if (!line_end) {
+        req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
+        return;
+    }
 
-    /* Parse method */
-    char *method_end = http_strchr(cursor, ' ');
-    if (!method_end) {
-        printf("[ERROR] Failed to parse method");
-        free(request_copy);
+    size_t line_len = (size_t)(line_end - request);
+    const char *method_end = http_find_char(request, line_len, ' ');
+    if (!method_end || method_end == request) {
+        req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
+        return;
+    }
+
+    const char *path_start = method_end + 1;
+    if (path_start >= request || path_start >= request + line_len ||
+        *path_start == ' ' || *path_start == '\t') {
+        req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
+        return;
+    }
+
+    size_t method_len = (size_t)(method_end - request);
+    if (http_parse_method_token(request, method_len, req) != 0) {
+        req->status = HTTP_400_BAD_REQUEST;
         req->method = -1;
         return;
     }
-    *method_end = '\0';
-    http_parse_method(cursor, req);
 
-    /**
-    * Parse path
-    * Note: Servers ought to be cautious about depending on URI lengths
-    * above 255 bytes, because some older client or proxy
-    * implementations might not properly support these lengths.
-    */
-    cursor = method_end + 1;
-    char *path_end = http_strchr(cursor, ' ');
-    if (!path_end) {
-        printf("[ERROR] Failed to parse path");
-        free(request_copy);
+    const char *path_end = http_find_char(path_start, (size_t)(line_len - (size_t)(path_start - request)), ' ');
+    if (!path_end || path_end == path_start) {
         req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
         return;
     }
-    *path_end = '\0';
-    if (strlen(cursor) > 255) {
+
+    const char *version_start = path_end + 1;
+    if (version_start >= request + line_len || *version_start == ' ' || *version_start == '\t') {
+        req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
+        return;
+    }
+
+    size_t path_len = (size_t)(path_end - path_start);
+    if (path_len > 255) {
         fprintf(stderr, "[ERROR] URI length exceeds 255 bytes\n");
-        /**
-         * A server SHOULD return 414 (Request-URI Too Long) status if a URI is longer
-         * than the server can handle.
-         */
         req->status = HTTP_414_URI_TOO_LONG;
-        free(request_copy);
         req->method = -1;
         return;
     }
-    req->path = http_strdup(cursor);
+
+    req->path = malloc(path_len + 1);
     if (!req->path) {
         printf("[ERROR] Failed to allocate memory for path");
-        free(request_copy);
-        return;
-    }
-
-    /* Parse HTTP version */
-    cursor = path_end + 1;
-    char *version_end = http_strstr(cursor, "\r\n");
-    if (!version_end) {
-        printf("[ERROR] Failed to parse HTTP version");
-        free(request_copy);
         req->method = -1;
+        req->status = HTTP_500_INTERNAL_SERVER_ERROR;
         return;
     }
-    *version_end = '\0';
-    if (strncmp(cursor, HTTP_VERSION, strlen(HTTP_VERSION)) != 0) {   
+    memcpy(req->path, path_start, path_len);
+    req->path[path_len] = '\0';
+
+    size_t version_len = (size_t)((request + line_len) - version_start);
+    if (version_len == 0) {
+        req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
+        return;
+    }
+    if (version_len == 8 && memcmp(version_start, "HTTP/1.0", 8) == 0) {
         req->version = HTTP_VERSION_1_0;
-    } else {
+    } else if (version_len == strlen(HTTP_VERSION) &&
+               memcmp(version_start, HTTP_VERSION, strlen(HTTP_VERSION)) == 0) {
         req->version = HTTP_VERSION_1_1;
+    } else {
+        req->method = -1;
+        req->status = HTTP_400_BAD_REQUEST;
+        return;
     }
 
-    /* Move cursor to headers */
-    cursor = version_end + 2;
-
-    /* Create maps for headers and params */
     req->headers = http_kv_create(32);
     req->params = http_kv_create(10);
     if (!req->headers || !req->params) {
         printf("[ERROR] Failed to create map");
-        free(request_copy);
+        req->method = -1;
+        req->status = HTTP_500_INTERNAL_SERVER_ERROR;
         return;
     }
 
-    /* Parse headers */
-    char *headers_end = http_strstr(cursor, "\r\n\r\n");
-    if (headers_end) {
-        size_t headers_length = headers_end - cursor;
-        
-        char *headers = malloc(headers_length + 1);
-        if (!headers) {
-            printf("[ERROR] Failed to allocate memory for headers");
-            free(request_copy);
-            return;
-        }
-
-        strncpy(headers, cursor, headers_length);
-        headers[headers_length] = '\0';
-        if (http_parse_headers(headers, req) != 0) {
-            /* RFC 9112 §5: invalid header field syntax => 400 Bad Request. */
-            req->status = HTTP_400_BAD_REQUEST;
-            req->method = -1;
-            free(headers);
-            free(request_copy);
-            return;
-        }
-        free(headers);
-
-        cursor = headers_end + 4; /* Move past "\r\n\r\n" */
+    const char *headers_end = http_find_crlfcrlf(request, request_len);
+    if (!headers_end || headers_end < line_end + 2) {
+        req->status = HTTP_400_BAD_REQUEST;
+        req->method = -1;
+        return;
     }
 
-    /* Parse query params */
+    const char *headers_start = line_end + 2;
+    size_t headers_len = (size_t)(headers_end - headers_start);
+    http_header_parse_state_t header_state = {0};
+    if (headers_len > 0) {
+        if (http_parse_headers(headers_start, headers_len, req, &header_state) != 0) {
+            req->status = HTTP_400_BAD_REQUEST;
+            req->method = -1;
+            return;
+        }
+    }
+
     char *query = http_strchr(req->path, '?');
     if (query) {
         *query = '\0';
@@ -555,56 +795,92 @@ static void http_parse_request(const char *request, http_request_t *req) {
 
     req->body = NULL;
 
-    /* RFC 9112 §6.1: Transfer-Encoding overrides Content-Length. */
     const char *transfer_encoding = http_kv_get(req->headers, "Transfer-Encoding");
     if (transfer_encoding) {
         int is_chunked = 0;
         int has_other = 0;
         http_parse_transfer_encoding_value(transfer_encoding, &is_chunked, &has_other);
         if (has_other) {
-            /* RFC 9112 §6.1: respond 501 to unsupported transfer codings. */
             req->status = HTTP_501_NOT_IMPLEMENTED;
             req->method = -1;
-            free(request_copy);
             return;
         }
         req->transfer_encoding_chunked = is_chunked ? 1 : 0;
     }
 
-    /* Parse Content-Length */
-    char *content_length_str = http_kv_get(req->headers, "Content-Length");
-    if (content_length_str && !req->transfer_encoding_chunked) {
-        while (*content_length_str == ' ' || *content_length_str == '\t') {
-            content_length_str++;
-        }
-        char *endptr = NULL;
-        errno = 0;
-        unsigned long length = strtoul(content_length_str, &endptr, 10);
-        while (endptr && (*endptr == ' ' || *endptr == '\t')) {
-            endptr++;
-        }
-        if (errno != 0 || endptr == content_length_str || *endptr != '\0' || length > INT_MAX) {
-            req->status = HTTP_400_BAD_REQUEST;
-            req->method = -1;
-            free(request_copy);
-            return;
-        }
-        req->content_length = (int)length;
+    if (header_state.content_length_conflict || header_state.host_conflict || header_state.host_empty || header_state.te_invalid) {
+        req->status = HTTP_400_BAD_REQUEST;
+        req->method = -1;
+        return;
+    }
+    if (header_state.content_length_seen && !req->transfer_encoding_chunked) {
+        req->content_length = header_state.content_length_value;
     } else {
         req->content_length = 0;
     }
 
-    /* Parse Connection */
     const char *connection = http_kv_get(req->headers, "Connection");
-    /* RFC 9110 §7.6.1: Connection header is a list of tokens. */
     if (connection && http_header_has_token(connection, "keep-alive")) {
         req->keep_alive = 1;
     }
     if (connection && http_header_has_token(connection, "close")) {
         req->close = 1;
     }
+}
 
-    free(request_copy);
+static int http_validate_trailer_fields(const char *trailers, size_t len) {
+    const char *p = trailers;
+
+    while (p < trailers + len) {
+        const char *line_end = http_find_crlf(p, len - (size_t)(p - trailers));
+        if (!line_end) {
+            return -1;
+        }
+
+        size_t line_len = (size_t)(line_end - p);
+        if (line_len == 0) {
+            if (line_end + 2 != trailers + len) {
+                return -1;
+            }
+            return 0;
+        }
+
+        if (p[0] == ' ' || p[0] == '\t') {
+            return -1;
+        }
+
+        const char *colon = memchr(p, ':', line_len);
+        if (!colon) {
+            return -1;
+        }
+
+        size_t name_len = (size_t)(colon - p);
+        if (http_header_name_invalid_range(p, name_len)) {
+            return -1;
+        }
+
+        if (http_value_equals_case_insensitive(p, name_len, "transfer-encoding", 17) ||
+            http_value_equals_case_insensitive(p, name_len, "content-length", 14) ||
+            http_value_equals_case_insensitive(p, name_len, "host", 4) ||
+            http_value_equals_case_insensitive(p, name_len, "connection", 10) ||
+            http_value_equals_case_insensitive(p, name_len, "upgrade", 7) ||
+            http_value_equals_case_insensitive(p, name_len, "te", 2) ||
+            http_value_equals_case_insensitive(p, name_len, "trailer", 7)) {
+            return -1;
+        }
+
+        const char *value = colon + 1;
+        while (value < line_end && (*value == ' ' || *value == '\t')) {
+            value++;
+        }
+        if (http_header_value_invalid_range(value, (size_t)(line_end - value))) {
+            return -1;
+        }
+
+        p = line_end + 2;
+    }
+
+    return 0;
 }
 
 
@@ -870,8 +1146,8 @@ int http_parse_data(http_request_t *req) {
     return 0;
 }
 
-int http_parse(const char *request, http_request_t *req) {
-    http_parse_request(request, req);
+int http_parse(const char *request, size_t request_len, http_request_t *req) {
+    http_parse_request(request, request_len, req);
     if (req->method == -1) {
         return -1;
     }

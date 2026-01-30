@@ -52,6 +52,10 @@ void shutdown_run(shutdown_context_t *shutdown_ctx) {
         shutdown_ctx->listen_fd = -1;
     }
 
+    if (shutdown_ctx->active_conns) {
+        active_conn_close_all(shutdown_ctx->active_conns);
+    }
+
     if (shutdown_ctx->pool) {
         thread_pool_request_stop(shutdown_ctx->pool);
     }
@@ -64,6 +68,9 @@ void shutdown_run(shutdown_context_t *shutdown_ctx) {
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     while (!shutdown_is_idle(shutdown_ctx)) {
+        if (shutdown_ctx->timeout_ms <= 0) {
+            break;
+        }
         if (shutdown_ctx->timeout_ms > 0 && shutdown_elapsed_ms(&start) >= shutdown_ctx->timeout_ms) {
             break;
         }
@@ -80,8 +87,12 @@ void shutdown_run(shutdown_context_t *shutdown_ctx) {
     }
 
     if (shutdown_ctx->pool) {
-        thread_pool_destroy(shutdown_ctx->pool);
-        shutdown_ctx->pool = NULL;
+        if (shutdown_ctx->policy == SHUTDOWN_POLICY_FORCE && shutdown_ctx->timeout_ms <= 0) {
+            shutdown_ctx->pool = NULL;
+        } else {
+            thread_pool_destroy(shutdown_ctx->pool);
+            shutdown_ctx->pool = NULL;
+        }
     }
 
     if (shutdown_ctx->router) {
@@ -117,5 +128,10 @@ void shutdown_run(shutdown_context_t *shutdown_ctx) {
     if (shutdown_ctx->cache) {
         container_shutdown(shutdown_ctx->cache);
         shutdown_ctx->cache = NULL;
+    }
+
+    if (shutdown_ctx->active_conns) {
+        active_conn_shutdown(shutdown_ctx->active_conns);
+        shutdown_ctx->active_conns = NULL;
     }
 }

@@ -15,6 +15,7 @@
 #include "ws.h"
 #include "jobs.h"
 #include "shutdown.h"
+#include "active_conn.h"
 
 typedef struct ssl_st SSL;
 struct thread_pool;
@@ -66,7 +67,9 @@ struct server_state {
     struct ws_server ws;
     job_system_t jobs;
     struct thread_pool *pool;
+    active_conn_list_t active_conns;
     struct server_config config;
+    atomic_int shutting_down;
     atomic_int active_clients;
 };
 

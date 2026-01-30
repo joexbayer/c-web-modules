@@ -94,7 +94,7 @@ typedef struct websocket {
     int (*close)(struct websocket* ws);
 } websocket_t;
 
-int http_parse(const char *request, http_request_t *req);
+int http_parse(const char *request, size_t request_len, http_request_t *req);
 int http_parse_data(http_request_t *req);
 int http_is_websocket_upgrade(http_request_t *req);
 /* Returns 0 on success, 1 if body is incomplete, -1 on error. */

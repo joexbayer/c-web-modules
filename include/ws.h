@@ -4,12 +4,14 @@
 #include <pthread.h>
 #include <list.h>
 #include <cweb.h>
+#include <active_conn.h>
 
 struct ws_server {
     struct list *containers;
     pthread_mutex_t mutex;
     pthread_t thread;
     int running;
+    active_conn_list_t *active_conns;
 };
 
 int ws_init(struct ws_server *ws);

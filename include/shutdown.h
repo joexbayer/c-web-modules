@@ -11,6 +11,7 @@
 #include <db.h>
 #include <crypto.h>
 #include <jobs.h>
+#include <active_conn.h>
 
 typedef enum shutdown_policy {
     SHUTDOWN_POLICY_GRACEFUL = 0,
@@ -28,6 +29,7 @@ typedef struct shutdown_context {
     struct crypto *crypto;
     struct sqldb *database;
     struct container *cache;
+    active_conn_list_t *active_conns;
     atomic_int *active_clients;
     int timeout_ms;
     shutdown_policy_t policy;

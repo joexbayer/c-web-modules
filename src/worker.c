@@ -1,6 +1,7 @@
 #include "server.h"
 #include "engine.h"
 #include "pool.h"
+#include <errno.h>
 #include <limits.h>
 #include <dlfcn.h>
 #include <openssl/ssl.h>
@@ -8,12 +9,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
 #define MODULE_URL "/mgnt"
+#define SOCKET_POLL_TIMEOUT_MS 500
 
 void cors_apply_response(const cors_config_t *cors, const http_request_t *req, http_response_t *res);
 int auth_require_admin(struct server_state *state, int fd, http_request_t *req, http_response_t *res);
@@ -24,18 +27,25 @@ static void* server_resolve(void *user_data, const char* module, const char* sym
 }
 
 int server_init_services(struct server_state *state) {
+    if (active_conn_init(&state->active_conns, 64) != 0) {
+        return -1;
+    }
+
     if (container_init(&state->cache, 32) != 0) {
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
 
     if (scheduler_init(&state->scheduler, 0) != 0) {
         container_shutdown(&state->cache);
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
 
     if (sqldb_init(&state->database, "db.sqlite3") != 0) {
         scheduler_shutdown(&state->scheduler);
         container_shutdown(&state->cache);
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
 
@@ -44,6 +54,7 @@ int server_init_services(struct server_state *state) {
         sqldb_shutdown(&state->database);
         scheduler_shutdown(&state->scheduler);
         container_shutdown(&state->cache);
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
 
@@ -61,8 +72,10 @@ int server_init_services(struct server_state *state) {
         sqldb_shutdown(&state->database);
         scheduler_shutdown(&state->scheduler);
         container_shutdown(&state->cache);
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
+    state->ws.active_conns = &state->active_conns;
 
     if (router_init(&state->router, &state->ws, NULL, state->config.module_dir, state->config.purge_modules, &state->ctx) != 0) {
         ws_shutdown(&state->ws, &state->ctx);
@@ -70,6 +83,7 @@ int server_init_services(struct server_state *state) {
         sqldb_shutdown(&state->database);
         scheduler_shutdown(&state->scheduler);
         container_shutdown(&state->cache);
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
 
@@ -80,6 +94,7 @@ int server_init_services(struct server_state *state) {
         sqldb_shutdown(&state->database);
         scheduler_shutdown(&state->scheduler);
         container_shutdown(&state->cache);
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
     if (!state->router.module_handle) {
@@ -91,6 +106,7 @@ int server_init_services(struct server_state *state) {
         sqldb_shutdown(&state->database);
         scheduler_shutdown(&state->scheduler);
         container_shutdown(&state->cache);
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
 
@@ -104,6 +120,7 @@ int server_init_services(struct server_state *state) {
         sqldb_shutdown(&state->database);
         scheduler_shutdown(&state->scheduler);
         container_shutdown(&state->cache);
+        active_conn_shutdown(&state->active_conns);
         return -1;
     }
     bind_fn(jobs_create_impl, &state->ctx);
@@ -244,21 +261,83 @@ static void thread_clean_up(http_request_t *req, http_response_t *res) {
     free(res->body);
 }
 
-static void thread_set_timeout(int sockfd, int seconds) {
-    struct timeval tv;
-    tv.tv_sec = seconds;
-    tv.tv_usec = 0;
-    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv) != 0) {
-        perror("[ERROR] Failed to set socket timeout");
+static int read_socket_logged(struct server_state *state, struct connection *c, char *buffer, size_t buffer_len, const char *stage) {
+    (void)stage;
+    int ret;
+
+    while (1) {
+        if (atomic_load(&state->shutting_down)) {
+            errno = EINTR;
+            return -1;
+        }
+        struct pollfd pfd = {0};
+        pfd.fd = c->sockfd;
+        pfd.events = POLLIN;
+        int poll_ret = poll(&pfd, 1, SOCKET_POLL_TIMEOUT_MS);
+        if (poll_ret == 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (poll_ret < 0) {
+            return -1;
+        }
+        if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+            errno = ECONNRESET;
+            return -1;
+        }
+#ifdef PRODUCTION
+        ret = SSL_read(c->ssl, buffer, (int)buffer_len);
+        if (ret <= 0) {
+            int ssl_err = SSL_get_error(c->ssl, ret);
+            if (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE) {
+                continue;
+            }
+            return ret;
+        }
+#else
+        ret = (int)read(c->sockfd, buffer, buffer_len);
+#endif
+        return ret;
     }
 }
 
-static void thread_clear_timeout(int sockfd) {
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
-    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv) != 0) {
-        perror("[ERROR] Failed to clear socket timeout");
+static int write_socket_logged(struct server_state *state, struct connection *c, const char *buffer, size_t buffer_len, const char *stage) {
+    (void)stage;
+    int ret;
+
+    while (1) {
+        if (atomic_load(&state->shutting_down)) {
+            errno = EINTR;
+            return -1;
+        }
+        struct pollfd pfd = {0};
+        pfd.fd = c->sockfd;
+        pfd.events = POLLOUT;
+        int poll_ret = poll(&pfd, 1, SOCKET_POLL_TIMEOUT_MS);
+        if (poll_ret == 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (poll_ret < 0) {
+            return -1;
+        }
+        if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+            errno = ECONNRESET;
+            return -1;
+        }
+#ifdef PRODUCTION
+        ret = SSL_write(c->ssl, buffer, (int)buffer_len);
+        if (ret <= 0) {
+            int ssl_err = SSL_get_error(c->ssl, ret);
+            if (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE) {
+                continue;
+            }
+            return ret;
+        }
+#else
+        ret = (int)write(c->sockfd, buffer, buffer_len);
+#endif
+        return ret;
     }
 }
 
@@ -270,15 +349,20 @@ void thread_handle_client(void *arg) {
     free(task);
     atomic_fetch_add(&state->active_clients, 1);
     int close_socket = 1;
+    int tracked_conn = 0;
 
-    thread_set_timeout(c->sockfd, 2);
+    if (active_conn_add(&state->active_conns, c->sockfd) != 0) {
+        fprintf(stderr, "[WARN] Failed to track active connection\n");
+    } else {
+        tracked_conn = 1;
+    }
 
     while (1) {
         int close_connection = 0;
 
         char buffer[REQUEST_BUFFER_SIZE] = {0};
 #ifdef PRODUCTION
-        int read_size = SSL_read(c->ssl, buffer, sizeof(buffer) - 1);
+        int read_size = read_socket_logged(state, c, buffer, sizeof(buffer) - 1, "initial");
         if (read_size <= 0) {
             if (SSL_get_error(c->ssl, read_size) == SSL_ERROR_ZERO_RETURN) {
                 break;
@@ -286,7 +370,7 @@ void thread_handle_client(void *arg) {
             break;
         }
 #else
-        int read_size = (int)read(c->sockfd, buffer, sizeof(buffer) - 1);
+        int read_size = read_socket_logged(state, c, buffer, sizeof(buffer) - 1, "initial");
         if (read_size <= 0) {
             break;
         }
@@ -297,9 +381,9 @@ void thread_handle_client(void *arg) {
         char *header_end = strstr(buffer, "\r\n\r\n");
         while (!header_end && read_size < (int)sizeof(buffer) - 1) {
 #ifdef PRODUCTION
-            ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
+            ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "header");
 #else
-            ret = (int)read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+            ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "header");
 #endif
             if (ret <= 0) {
                 break;
@@ -321,7 +405,7 @@ void thread_handle_client(void *arg) {
         memset(&req, 0, sizeof(req));
         req.tid = pthread_self();
 
-        http_parse(buffer, &req);
+        http_parse(buffer, (size_t)read_size, &req);
         if (req.method == HTTP_ERR) {
             dprintf(c->sockfd, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", http_errors[req.status]);
             thread_clean_up_request(&req);
@@ -341,9 +425,9 @@ void thread_handle_client(void *arg) {
             int decode_status = http_decode_chunked_body(buffer + header_len, body_len_in_buffer, &decoded_body, &decoded_len);
             while (decode_status == 1 && read_size < (int)sizeof(buffer) - 1) {
 #ifdef PRODUCTION
-                ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
+                ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "chunked");
 #else
-                ret = (int)read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+                ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "chunked");
 #endif
                 if (ret <= 0) {
                     break;
@@ -386,9 +470,9 @@ void thread_handle_client(void *arg) {
             while (!request_too_large && body_len_in_buffer < (size_t)req.content_length &&
                    read_size < (int)sizeof(buffer) - 1) {
 #ifdef PRODUCTION
-                ret = SSL_read(c->ssl, buffer + read_size, sizeof(buffer) - read_size - 1);
+                ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "body");
 #else
-                ret = (int)read(c->sockfd, buffer + read_size, sizeof(buffer) - read_size - 1);
+                ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "body");
 #endif
                 if (ret <= 0) {
                     break;
@@ -399,6 +483,10 @@ void thread_handle_client(void *arg) {
             }
 
             if (!request_too_large && body_len_in_buffer < (size_t)req.content_length) {
+                parse_error_status = HTTP_400_BAD_REQUEST;
+            }
+            if (!request_too_large && !parse_error_status && req.content_length > 0 &&
+                body_len_in_buffer > (size_t)req.content_length) {
                 parse_error_status = HTTP_400_BAD_REQUEST;
             }
 
@@ -484,7 +572,7 @@ void thread_handle_client(void *arg) {
             fprintf(stderr, "[ERROR] Response header too large\n");
             break;
         }
-        if (SSL_write(c->ssl, response_head, (int)header_len) <= 0) {
+        if (write_socket_logged(state, c, response_head, header_len, "resp_head") <= 0) {
             perror("[ERROR] SSL write failed");
             break;
         }
@@ -492,16 +580,16 @@ void thread_handle_client(void *arg) {
             fprintf(stderr, "[ERROR] Response body too large\n");
             break;
         }
-        if (body_len > 0 && SSL_write(c->ssl, res.body, (int)body_len) <= 0) {
+        if (body_len > 0 && write_socket_logged(state, c, res.body, body_len, "resp_body") <= 0) {
             perror("[ERROR] SSL write failed");
             break;
         }
 #else
-        if (write(c->sockfd, response_head, strlen(response_head)) <= 0) {
+        if (write_socket_logged(state, c, response_head, strlen(response_head), "resp_head") <= 0) {
             perror("[ERROR] Write failed");
             break;
         }
-        if (body_len > 0 && write(c->sockfd, res.body, body_len) <= 0) {
+        if (body_len > 0 && write_socket_logged(state, c, res.body, body_len, "resp_body") <= 0) {
             perror("[ERROR] Write failed");
             break;
         }
@@ -516,9 +604,11 @@ void thread_handle_client(void *arg) {
 
         thread_clean_up(&req, &res);
         if (req.websocket) {
-            thread_clear_timeout(c->sockfd);
             ws_confirm_open(&state->ws, &state->ctx, c->sockfd);
             close_socket = 0;
+            if (tracked_conn) {
+                tracked_conn = 0;
+            }
             goto thread_handle_client_exit;
         }
 
@@ -535,6 +625,10 @@ thread_handle_client_exit:
     }
 #endif
     if (close_socket) {
+        if (tracked_conn) {
+            active_conn_remove(&state->active_conns, c->sockfd);
+            tracked_conn = 0;
+        }
         close(c->sockfd);
     }
     free(c);

@@ -253,6 +253,9 @@ static int ws_container_destroy(struct ws_container *container) {
     pthread_mutex_lock(&container->mutex);
 
     event_del(container->ev);
+    if (server->active_conns) {
+        active_conn_remove(server->active_conns, container->ws->client_fd);
+    }
     close(container->ws->client_fd);
     free(container->ws->session);
     free(container->ws);
@@ -654,6 +657,7 @@ int ws_init(struct ws_server *ws) {
     }
 
     ws->running = 1;
+    ws->active_conns = NULL;
     pthread_mutex_init(&ws->mutex, NULL);
 
     if (pthread_create(&ws->thread, NULL, ws_event_thread, NULL) != 0) {

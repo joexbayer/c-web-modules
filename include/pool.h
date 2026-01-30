@@ -18,6 +18,8 @@ struct thread_pool {
     pthread_mutex_t lock;
     pthread_cond_t cond;
     pthread_t *threads;
+    pthread_t *active_thread_ids;
+    unsigned char *active_flags;
     struct task *task_queue;
     struct task *task_tail;
     int max_threads;

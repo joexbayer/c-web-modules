@@ -60,6 +60,7 @@ int main(int argc, char *argv[]) {
     struct server_state state;
     memset(&state, 0, sizeof(state));
     atomic_init(&state.active_clients, 0);
+    atomic_init(&state.shutting_down, 0);
 
     state.config.port = DEFAULT_PORT;
     state.config.thread_pool_size = 0;
@@ -155,6 +156,7 @@ int main(int argc, char *argv[]) {
             .crypto = &state.crypto,
             .database = &state.database,
             .cache = &state.cache,
+            .active_conns = &state.active_conns,
             .active_clients = &state.active_clients,
             .timeout_ms = state.config.shutdown_timeout_ms,
             .policy = state.config.shutdown_policy
@@ -199,6 +201,8 @@ int main(int argc, char *argv[]) {
         thread_pool_add_task(state.pool, thread_handle_client, task);
     }
 
+    atomic_store(&state.shutting_down, 1);
+
     shutdown_context_t shutdown_ctx = {
         .listen_fd = s.sockfd,
         .pool = state.pool,
@@ -210,6 +214,7 @@ int main(int argc, char *argv[]) {
         .crypto = &state.crypto,
         .database = &state.database,
         .cache = &state.cache,
+        .active_conns = &state.active_conns,
         .active_clients = &state.active_clients,
         .timeout_ms = state.config.shutdown_timeout_ms,
         .policy = state.config.shutdown_policy

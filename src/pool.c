@@ -8,6 +8,8 @@
 #include <string.h>
 
 static void *thread_pool_worker(void *arg);
+static int thread_pool_register_active(struct thread_pool *pool, pthread_t tid);
+static void thread_pool_unregister_active(struct thread_pool *pool, int slot);
 
 struct thread_pool *thread_pool_init(int num_threads) {
     if (num_threads <= 0) {
@@ -46,6 +48,18 @@ struct thread_pool *thread_pool_init(int num_threads) {
         free(pool);
         return NULL;
     }
+    pool->active_thread_ids = calloc((size_t)num_threads, sizeof(pthread_t));
+    pool->active_flags = calloc((size_t)num_threads, sizeof(unsigned char));
+    if (pool->active_thread_ids == NULL || pool->active_flags == NULL) {
+        fprintf(stderr, "[ERROR] Failed to allocate memory for active thread tracking\n");
+        free(pool->active_thread_ids);
+        free(pool->active_flags);
+        free(pool->threads);
+        pthread_cond_destroy(&pool->cond);
+        pthread_mutex_destroy(&pool->lock);
+        free(pool);
+        return NULL;
+    }
 
     for (int i = 0; i < num_threads; i++) {
         if (pthread_create(&pool->threads[i], NULL, thread_pool_worker, pool) != 0) {
@@ -59,6 +73,8 @@ struct thread_pool *thread_pool_init(int num_threads) {
                 pthread_join(pool->threads[j], NULL);
             }
 
+            free(pool->active_thread_ids);
+            free(pool->active_flags);
             free(pool->threads);
             pthread_cond_destroy(&pool->cond);
             pthread_mutex_destroy(&pool->lock);
@@ -76,12 +92,34 @@ static void cleanup_unlock(void *arg) {
     pthread_mutex_unlock((pthread_mutex_t *)arg);
 }
 
+static int thread_pool_register_active(struct thread_pool *pool, pthread_t tid) {
+    int slot = -1;
+    for (int i = 0; i < pool->max_threads; i++) {
+        if (pool->active_flags[i] == 0) {
+            pool->active_flags[i] = 1;
+            pool->active_thread_ids[i] = tid;
+            slot = i;
+            break;
+        }
+    }
+    return slot;
+}
+
+static void thread_pool_unregister_active(struct thread_pool *pool, int slot) {
+    if (slot < 0 || slot >= pool->max_threads) {
+        return;
+    }
+    pool->active_flags[slot] = 0;
+    memset(&pool->active_thread_ids[slot], 0, sizeof(pthread_t));
+}
+
 static void *thread_pool_worker(void *arg) {
     struct thread_pool *pool = (struct thread_pool *)arg;
 
     while (1) {
         struct task *task = NULL;
         int should_stop = 0;
+        int active_slot = -1;
         pthread_mutex_lock(&pool->lock);
         pthread_cleanup_push(cleanup_unlock, &pool->lock);
 
@@ -100,6 +138,7 @@ static void *thread_pool_worker(void *arg) {
                 }
                 pool->queue_length--;
                 atomic_fetch_add(&pool->active_threads, 1);
+                active_slot = thread_pool_register_active(pool, pthread_self());
             }
         }
 
@@ -112,6 +151,9 @@ static void *thread_pool_worker(void *arg) {
         if (task) {
             task->function(task->arg);
             atomic_fetch_sub(&pool->active_threads, 1);
+            pthread_mutex_lock(&pool->lock);
+            thread_pool_unregister_active(pool, active_slot);
+            pthread_mutex_unlock(&pool->lock);
             free(task);
         }
     }
@@ -210,6 +252,8 @@ void thread_pool_destroy(struct thread_pool *pool) {
         }
     }
 
+    free(pool->active_thread_ids);
+    free(pool->active_flags);
     free(pool->threads);
     pthread_mutex_destroy(&pool->lock);
     pthread_cond_destroy(&pool->cond);
