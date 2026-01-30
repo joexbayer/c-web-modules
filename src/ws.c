@@ -13,6 +13,7 @@
 #include <cweb.h>
 #include <libevent.h>
 #include <ws.h>
+#include <engine.h>
 
 #define WS_MAX_FRAME_SIZE 2048
 
@@ -444,7 +445,9 @@ static void ws_handle_frames(struct ws_container container[static 1]) {
     struct cweb_context *ctx = container->ctx;
 
     if (received <= 0) {
-        if (info->on_close) info->on_close(ctx, ws);
+        if (info->on_close) {
+            safe_execute_ws_on_close(info->on_close, ctx, ws);
+        }
         pthread_mutex_unlock(&container->mutex);
         ws_container_destroy(container);
         return;
@@ -456,7 +459,9 @@ static void ws_handle_frames(struct ws_container container[static 1]) {
     if (status == WS_FRAME_COMPLETE) {
         if (frame.opcode == WS_OPCODE_CLOSE) {
             ws_send_frame(ws->client_fd, "", 0, WS_OPCODE_CLOSE);
-            if (info->on_close) info->on_close(ctx, ws);
+            if (info->on_close) {
+                safe_execute_ws_on_close(info->on_close, ctx, ws);
+            }
             pthread_mutex_unlock(&container->mutex);
             ws_free_frame(&frame);
             ws_container_destroy(container);
@@ -467,7 +472,14 @@ static void ws_handle_frames(struct ws_container container[static 1]) {
                 if (payload_copy) {
                     memcpy(payload_copy, frame.payload, frame.payload_len);
                     payload_copy[frame.payload_len] = '\0';
-                    info->on_message(ctx, ws, payload_copy, frame.payload_len);
+                    if (safe_execute_ws_on_message(info->on_message, ctx, ws, payload_copy, frame.payload_len) != 0) {
+                        free(payload_copy);
+                        ws_send_frame(ws->client_fd, "", 0, WS_OPCODE_CLOSE);
+                        pthread_mutex_unlock(&container->mutex);
+                        ws_free_frame(&frame);
+                        ws_container_destroy(container);
+                        return;
+                    }
                     free(payload_copy);
                 }
             }
@@ -480,7 +492,9 @@ static void ws_handle_frames(struct ws_container container[static 1]) {
         fprintf(stderr, "[ERROR] Error decoding WebSocket frame\n");
         ws_send_frame(ws->client_fd, "", 0, WS_OPCODE_CLOSE);
         ws_free_frame(&frame);
-        if (info->on_close) info->on_close(ctx, ws);
+        if (info->on_close) {
+            safe_execute_ws_on_close(info->on_close, ctx, ws);
+        }
         pthread_mutex_unlock(&container->mutex);
         ws_container_destroy(container);
         return;
@@ -542,7 +556,14 @@ int ws_confirm_open(struct ws_server *server, struct cweb_context *ctx, int sd) 
     if (!container) return -1;
 
     pthread_mutex_lock(&container->mutex);
-    if (container->info->on_open) container->info->on_open(ctx, container->ws);
+    if (container->info->on_open) {
+        if (safe_execute_ws_on_open(container->info->on_open, ctx, container->ws) != 0) {
+            ws_send_frame(container->ws->client_fd, "", 0, WS_OPCODE_CLOSE);
+            pthread_mutex_unlock(&container->mutex);
+            ws_container_destroy(container);
+            return -1;
+        }
+    }
     pthread_mutex_unlock(&container->mutex);
 
     return 0;
