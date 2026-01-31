@@ -521,8 +521,8 @@ void ws_force_close(struct ws_server *server, struct ws_info *info) {
             close(container->ws->client_fd);
             free(container->ws->session);
             free(container->ws);
-            free(container);
             list_remove(server->containers, container);
+            free(container);
         }
     }
     pthread_mutex_unlock(&server->mutex);
@@ -690,9 +690,8 @@ void ws_shutdown(struct ws_server *ws, struct cweb_context *ctx) {
         free(container->ws);
         pthread_mutex_unlock(&container->mutex);
         pthread_mutex_destroy(&container->mutex);
-        free(container);
-
         list_remove(ws->containers, container);
+        free(container);
     }
 
     list_destroy(ws->containers);

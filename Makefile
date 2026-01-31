@@ -24,13 +24,13 @@ JANSSON_PREFIX := $(shell brew --prefix jansson)
 		$(error jansson is not installed, make sure its installed with `brew install jansson`)
 	endif
 
-	CFLAGS += -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/opt/jansson/include -fsanitize=thread,undefined
+	CFLAGS += -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/opt/jansson/include -fsanitize=address,undefined,bounds
 	LDFLAGS += -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/opt/jansson/lib
 endif
 # Export dynamic symbols on Linux
 ifeq ($(shell uname), Linux)
 ifndef NO_SANITIZE
-	CFLAGS += -Wl,--export-dynamic -fsanitize=thread,undefined,bounds
+	CFLAGS += -Wl,--export-dynamic -fsanitize=address,undefined,bounds
 else
 	CFLAGS += -Wl,--export-dynamic
 endif

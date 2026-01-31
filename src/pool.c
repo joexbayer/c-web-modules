@@ -94,7 +94,8 @@ static void cleanup_unlock(void *arg) {
 
 static int thread_pool_register_active(struct thread_pool *pool, pthread_t tid) {
     int slot = -1;
-    for (int i = 0; i < pool->max_threads; i++) {
+    volatile int i;
+    for (i = 0; i < pool->max_threads; i++) {
         if (pool->active_flags[i] == 0) {
             pool->active_flags[i] = 1;
             pool->active_thread_ids[i] = tid;
@@ -117,9 +118,9 @@ static void *thread_pool_worker(void *arg) {
     struct thread_pool *pool = (struct thread_pool *)arg;
 
     while (1) {
-        struct task *task = NULL;
-        int should_stop = 0;
-        int active_slot = -1;
+        struct task * volatile task = NULL;
+        volatile int should_stop = 0;
+        volatile int active_slot = -1;
         pthread_mutex_lock(&pool->lock);
         pthread_cleanup_push(cleanup_unlock, &pool->lock);
 

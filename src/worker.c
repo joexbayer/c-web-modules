@@ -394,7 +394,10 @@ void thread_handle_client(void *arg) {
         }
 
         if (!header_end) {
-            dprintf(c->sockfd, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", http_errors[HTTP_400_BAD_REQUEST]);
+            const char *body = "Bad Request: missing header terminator\n";
+            dprintf(c->sockfd,
+                "HTTP/1.1 %s\r\nContent-Length: %zu\r\n\r\n%s",
+                http_errors[HTTP_400_BAD_REQUEST], strlen(body), body);
             goto thread_handle_client_exit;
         }
 
@@ -407,7 +410,11 @@ void thread_handle_client(void *arg) {
 
         http_parse(buffer, (size_t)read_size, &req);
         if (req.method == HTTP_ERR) {
-            dprintf(c->sockfd, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", http_errors[req.status]);
+            fprintf(stderr, "[ERROR] HTTP parse failed: %s\n", http_errors[req.status]);
+            const char *body = http_errors[req.status];
+            dprintf(c->sockfd,
+                "HTTP/1.1 %s\r\nContent-Length: %zu\r\n\r\n%s",
+                http_errors[req.status], strlen(body), body);
             thread_clean_up_request(&req);
             goto thread_handle_client_exit;
         }

@@ -522,14 +522,17 @@ static int http_parse_headers(const char *headers, size_t headers_len, http_requ
     const char *line_start = headers;
     const char *headers_end = headers + headers_len;
 
+    int line_no = 0;
     while (line_start < headers_end) {
+        line_no++;
         const char *line_end = http_find_crlf(line_start, (size_t)(headers_end - line_start));
         if (!line_end) {
-            return -1;
+            line_end = headers_end;
         }
 
         size_t line_length = (size_t)(line_end - line_start);
         if (line_length == 0) {
+            fprintf(stderr, "[ERROR] HTTP parse: header line %d empty\n", line_no);
             return -1;
         }
 
@@ -543,12 +546,14 @@ static int http_parse_headers(const char *headers, size_t headers_len, http_requ
 
         /* RFC 9112 §5.1: obs-fold is invalid; reject header lines starting with SP/HTAB. */
         if (line[0] == ' ' || line[0] == '\t') {
+            fprintf(stderr, "[ERROR] HTTP parse: header line %d starts with whitespace\n", line_no);
             free(line);
             return -1;
         }
 
         char *colon = memchr(line, ':', line_length);
         if (!colon) {
+            fprintf(stderr, "[ERROR] HTTP parse: header line %d missing ':'\n", line_no);
             free(line);
             return -1;
         }
@@ -557,6 +562,7 @@ static int http_parse_headers(const char *headers, size_t headers_len, http_requ
         char *key = line;
         char *value = colon + 1;
         if (http_header_name_invalid(key)) {
+            fprintf(stderr, "[ERROR] HTTP parse: header line %d invalid name\n", line_no);
             free(line);
             return -1;
         }
@@ -566,6 +572,7 @@ static int http_parse_headers(const char *headers, size_t headers_len, http_requ
         }
 
         if (http_header_value_invalid(value)) {
+            fprintf(stderr, "[ERROR] HTTP parse: header line %d invalid value\n", line_no);
             free(line);
             return -1;
         }
@@ -627,7 +634,11 @@ static int http_parse_headers(const char *headers, size_t headers_len, http_requ
 
         free(line);
 
-        line_start = line_end + 2;
+        if (line_end == headers_end) {
+            line_start = headers_end;
+        } else {
+            line_start = line_end + 2;
+        }
     }
 
     return 0;
@@ -673,70 +684,91 @@ static void http_parse_params(const char *query, http_request_t *req) {
 
 
 /* Mainly parses the header of the HTTP request (length-bounded) */
+static void http_fail(http_request_t *req, http_error_t status, const char *msg) {
+    req->method = -1;
+    req->status = status;
+    if (msg) {
+        fprintf(stderr, "[ERROR] HTTP parse: %s\n", msg);
+    }
+}
+
+static void http_log_request_line(const char *request, size_t request_len, const char *reason) {
+    const char *line_end = http_find_crlf(request, request_len);
+    if (!line_end) {
+        return;
+    }
+    size_t line_len = (size_t)(line_end - request);
+    if (line_len > 256) {
+        line_len = 256;
+    }
+    fprintf(stderr, "[ERROR] HTTP parse: %s (line=\"", reason);
+    for (size_t i = 0; i < line_len; i++) {
+        unsigned char c = (unsigned char)request[i];
+        if (c >= 0x20 && c <= 0x7e) {
+            fputc(c, stderr);
+        } else {
+            fprintf(stderr, "\\x%02x", c);
+        }
+    }
+    fprintf(stderr, "\")\n");
+}
+
 static void http_parse_request(const char *request, size_t request_len, http_request_t *req) {
     if (!request || request_len == 0) {
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_fail(req, HTTP_400_BAD_REQUEST, "empty request");
         return;
     }
 
     const char *line_end = http_find_crlf(request, request_len);
     if (!line_end) {
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_fail(req, HTTP_400_BAD_REQUEST, "missing request line CRLF");
         return;
     }
 
     size_t line_len = (size_t)(line_end - request);
     const char *method_end = http_find_char(request, line_len, ' ');
     if (!method_end || method_end == request) {
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_fail(req, HTTP_400_BAD_REQUEST, "invalid request line (method)");
         return;
     }
 
     const char *path_start = method_end + 1;
-    if (path_start >= request || path_start >= request + line_len ||
+    if (path_start >= request + line_len ||
         *path_start == ' ' || *path_start == '\t') {
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_log_request_line(request, request_len, "invalid request line (path)");
+        http_fail(req, HTTP_400_BAD_REQUEST, "invalid request line (path)");
         return;
     }
 
     size_t method_len = (size_t)(method_end - request);
     if (http_parse_method_token(request, method_len, req) != 0) {
-        req->status = HTTP_400_BAD_REQUEST;
-        req->method = -1;
+        http_fail(req, HTTP_400_BAD_REQUEST, "unsupported method");
         return;
     }
 
     const char *path_end = http_find_char(path_start, (size_t)(line_len - (size_t)(path_start - request)), ' ');
     if (!path_end || path_end == path_start) {
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_fail(req, HTTP_400_BAD_REQUEST, "invalid request line (path end)");
         return;
     }
 
     const char *version_start = path_end + 1;
     if (version_start >= request + line_len || *version_start == ' ' || *version_start == '\t') {
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_fail(req, HTTP_400_BAD_REQUEST, "invalid request line (version)");
         return;
     }
 
     size_t path_len = (size_t)(path_end - path_start);
     if (path_len > 255) {
         fprintf(stderr, "[ERROR] URI length exceeds 255 bytes\n");
-        req->status = HTTP_414_URI_TOO_LONG;
-        req->method = -1;
+        http_fail(req, HTTP_414_URI_TOO_LONG, "uri too long");
         return;
     }
 
     req->path = malloc(path_len + 1);
     if (!req->path) {
         printf("[ERROR] Failed to allocate memory for path");
-        req->method = -1;
-        req->status = HTTP_500_INTERNAL_SERVER_ERROR;
+        http_fail(req, HTTP_500_INTERNAL_SERVER_ERROR, "path allocation failed");
         return;
     }
     memcpy(req->path, path_start, path_len);
@@ -744,8 +776,7 @@ static void http_parse_request(const char *request, size_t request_len, http_req
 
     size_t version_len = (size_t)((request + line_len) - version_start);
     if (version_len == 0) {
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_fail(req, HTTP_400_BAD_REQUEST, "missing http version");
         return;
     }
     if (version_len == 8 && memcmp(version_start, "HTTP/1.0", 8) == 0) {
@@ -754,8 +785,7 @@ static void http_parse_request(const char *request, size_t request_len, http_req
                memcmp(version_start, HTTP_VERSION, strlen(HTTP_VERSION)) == 0) {
         req->version = HTTP_VERSION_1_1;
     } else {
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_fail(req, HTTP_400_BAD_REQUEST, "unsupported http version");
         return;
     }
 
@@ -763,15 +793,13 @@ static void http_parse_request(const char *request, size_t request_len, http_req
     req->params = http_kv_create(10);
     if (!req->headers || !req->params) {
         printf("[ERROR] Failed to create map");
-        req->method = -1;
-        req->status = HTTP_500_INTERNAL_SERVER_ERROR;
+        http_fail(req, HTTP_500_INTERNAL_SERVER_ERROR, "header map allocation failed");
         return;
     }
 
     const char *headers_end = http_find_crlfcrlf(request, request_len);
     if (!headers_end || headers_end < line_end + 2) {
-        req->status = HTTP_400_BAD_REQUEST;
-        req->method = -1;
+        http_fail(req, HTTP_400_BAD_REQUEST, "missing header terminator");
         return;
     }
 
@@ -780,8 +808,7 @@ static void http_parse_request(const char *request, size_t request_len, http_req
     http_header_parse_state_t header_state = {0};
     if (headers_len > 0) {
         if (http_parse_headers(headers_start, headers_len, req, &header_state) != 0) {
-            req->status = HTTP_400_BAD_REQUEST;
-            req->method = -1;
+            http_fail(req, HTTP_400_BAD_REQUEST, "invalid headers");
             return;
         }
     }
@@ -801,16 +828,14 @@ static void http_parse_request(const char *request, size_t request_len, http_req
         int has_other = 0;
         http_parse_transfer_encoding_value(transfer_encoding, &is_chunked, &has_other);
         if (has_other) {
-            req->status = HTTP_501_NOT_IMPLEMENTED;
-            req->method = -1;
+            http_fail(req, HTTP_501_NOT_IMPLEMENTED, "unsupported transfer-encoding");
             return;
         }
         req->transfer_encoding_chunked = is_chunked ? 1 : 0;
     }
 
     if (header_state.content_length_conflict || header_state.host_conflict || header_state.host_empty || header_state.te_invalid) {
-        req->status = HTTP_400_BAD_REQUEST;
-        req->method = -1;
+        http_fail(req, HTTP_400_BAD_REQUEST, "invalid headers (conflict/empty)");
         return;
     }
     if (header_state.content_length_seen && !req->transfer_encoding_chunked) {
@@ -1156,8 +1181,7 @@ int http_parse(const char *request, size_t request_len, http_request_t *req) {
     char* host = http_kv_get(req->headers, "Host");
     if (!host) {
         fprintf(stderr, "[ERROR] Host header not found\n");
-        req->method = -1;
-        req->status = HTTP_400_BAD_REQUEST;
+        http_fail(req, HTTP_400_BAD_REQUEST, "missing host header");
         return -1;
     }
 

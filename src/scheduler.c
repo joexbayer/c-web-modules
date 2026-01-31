@@ -10,8 +10,8 @@ static void* scheduler_thread_function(void *arg) {
     struct scheduler *scheduler = (struct scheduler *)arg;
 
     while (1) {
-        struct work *current = NULL;
-        int should_stop = 0;
+        struct work * volatile current = NULL;
+        volatile int should_stop = 0;
         pthread_mutex_lock(&scheduler->mutex);
         pthread_cleanup_push(cleanup_unlock, &scheduler->mutex);
 
