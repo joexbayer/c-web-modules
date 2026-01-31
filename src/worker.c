@@ -26,36 +26,67 @@ static void* server_resolve(void *user_data, const char* module, const char* sym
     return router_resolve(router, module, symbol);
 }
 
+struct server_services_state {
+    int active_conns_ready;
+    int cache_ready;
+    int scheduler_ready;
+    int database_ready;
+    int crypto_ready;
+    int ws_ready;
+    int router_ready;
+    int jobs_ready;
+};
+
+static void server_services_cleanup(struct server_state *state, const struct server_services_state *svc) {
+    if (svc->jobs_ready) jobs_shutdown(&state->jobs);
+    if (svc->router_ready) router_shutdown(&state->router, &state->ctx);
+    if (svc->ws_ready) ws_shutdown(&state->ws, &state->ctx);
+    if (svc->crypto_ready) crypto_shutdown(&state->crypto);
+    if (svc->database_ready) sqldb_shutdown(&state->database);
+    if (svc->scheduler_ready) scheduler_shutdown(&state->scheduler);
+    if (svc->cache_ready) container_shutdown(&state->cache);
+    if (svc->active_conns_ready) active_conn_shutdown(&state->active_conns);
+}
+
+static int server_services_bind_jobs(struct server_state *state) {
+    if (!state->router.module_handle) {
+        fprintf(stderr, "[ERROR] libmodule handle missing\n");
+        return -1;
+    }
+
+    void (*bind_fn)(jobs_create_fn_t, void *) = dlsym(state->router.module_handle, "jobs_bind");
+    if (!bind_fn) {
+        fprintf(stderr, "[ERROR] Failed to bind jobs_create\n");
+        return -1;
+    }
+    bind_fn(jobs_create_impl, &state->ctx);
+    return 0;
+}
+
 int server_init_services(struct server_state *state) {
+    int rc = -1;
+    int crypto_ok = -1;
+    struct server_services_state svc = {0};
+
     if (active_conn_init(&state->active_conns, 64) != 0) {
         return -1;
     }
+    svc.active_conns_ready = 1;
 
-    if (container_init(&state->cache, 32) != 0) {
-        active_conn_shutdown(&state->active_conns);
-        return -1;
-    }
+    if (container_init(&state->cache, 32) != 0) goto cleanup;
+    svc.cache_ready = 1;
 
-    if (scheduler_init(&state->scheduler, 0) != 0) {
-        container_shutdown(&state->cache);
-        active_conn_shutdown(&state->active_conns);
-        return -1;
-    }
+    if (scheduler_init(&state->scheduler, 0) != 0) goto cleanup;
+    svc.scheduler_ready = 1;
 
-    if (sqldb_init(&state->database, "db.sqlite3") != 0) {
-        scheduler_shutdown(&state->scheduler);
-        container_shutdown(&state->cache);
-        active_conn_shutdown(&state->active_conns);
-        return -1;
-    }
+    if (sqldb_init(&state->database, "db.sqlite3") != 0) goto cleanup;
+    svc.database_ready = 1;
 
-    int crypto_ok = crypto_init(&state->crypto, NULL, NULL);
-    if (crypto_ok != 0 && state->config.environment == PROD) {
-        sqldb_shutdown(&state->database);
-        scheduler_shutdown(&state->scheduler);
-        container_shutdown(&state->cache);
-        active_conn_shutdown(&state->active_conns);
-        return -1;
+    crypto_ok = crypto_init(&state->crypto, NULL, NULL);
+    if (crypto_ok == 0) {
+        svc.crypto_ready = 1;
+    } else if (state->config.environment == PROD) {
+        goto cleanup;
     }
 
     state->ctx.cache = &state->cache;
@@ -67,65 +98,26 @@ int server_init_services(struct server_state *state) {
     state->ctx.symbols = &state->symbols;
     state->ctx.jobs = &state->jobs;
 
-    if (ws_init(&state->ws) != 0) {
-        crypto_shutdown(&state->crypto);
-        sqldb_shutdown(&state->database);
-        scheduler_shutdown(&state->scheduler);
-        container_shutdown(&state->cache);
-        active_conn_shutdown(&state->active_conns);
-        return -1;
-    }
+    if (ws_init(&state->ws) != 0) goto cleanup;
+    svc.ws_ready = 1;
     state->ws.active_conns = &state->active_conns;
 
-    if (router_init(&state->router, &state->ws, NULL, state->config.module_dir, state->config.purge_modules, &state->ctx) != 0) {
-        ws_shutdown(&state->ws, &state->ctx);
-        crypto_shutdown(&state->crypto);
-        sqldb_shutdown(&state->database);
-        scheduler_shutdown(&state->scheduler);
-        container_shutdown(&state->cache);
-        active_conn_shutdown(&state->active_conns);
-        return -1;
-    }
+    if (router_init(&state->router, &state->ws, NULL, state->config.module_dir, state->config.purge_modules, &state->ctx) != 0) goto cleanup;
+    svc.router_ready = 1;
 
-    if (jobs_init(&state->jobs, &state->ctx, &state->router, &state->ws) != 0) {
-        router_shutdown(&state->router, &state->ctx);
-        ws_shutdown(&state->ws, &state->ctx);
-        crypto_shutdown(&state->crypto);
-        sqldb_shutdown(&state->database);
-        scheduler_shutdown(&state->scheduler);
-        container_shutdown(&state->cache);
-        active_conn_shutdown(&state->active_conns);
-        return -1;
-    }
-    if (!state->router.module_handle) {
-        fprintf(stderr, "[ERROR] libmodule handle missing\n");
-        jobs_shutdown(&state->jobs);
-        router_shutdown(&state->router, &state->ctx);
-        ws_shutdown(&state->ws, &state->ctx);
-        crypto_shutdown(&state->crypto);
-        sqldb_shutdown(&state->database);
-        scheduler_shutdown(&state->scheduler);
-        container_shutdown(&state->cache);
-        active_conn_shutdown(&state->active_conns);
-        return -1;
-    }
+    if (jobs_init(&state->jobs, &state->ctx, &state->router, &state->ws) != 0) goto cleanup;
+    svc.jobs_ready = 1;
 
-    void (*bind_fn)(jobs_create_fn_t, void *) = dlsym(state->router.module_handle, "jobs_bind");
-    if (!bind_fn) {
-        fprintf(stderr, "[ERROR] Failed to bind jobs_create\n");
-        jobs_shutdown(&state->jobs);
-        router_shutdown(&state->router, &state->ctx);
-        ws_shutdown(&state->ws, &state->ctx);
-        crypto_shutdown(&state->crypto);
-        sqldb_shutdown(&state->database);
-        scheduler_shutdown(&state->scheduler);
-        container_shutdown(&state->cache);
-        active_conn_shutdown(&state->active_conns);
-        return -1;
-    }
-    bind_fn(jobs_create_impl, &state->ctx);
+    if (server_services_bind_jobs(state) != 0) goto cleanup;
 
-    return 0;
+    rc = 0;
+
+cleanup:
+    if (rc == 0) {
+        return 0;
+    }
+    server_services_cleanup(state, &svc);
+    return -1;
 }
 
 static int gateway(struct server_state *state, int fd, http_request_t *req, http_response_t *res) {
@@ -261,6 +253,202 @@ static void thread_clean_up(http_request_t *req, http_response_t *res) {
     free(res->body);
 }
 
+static int read_socket_logged(struct server_state *state, struct connection *c, char *buffer, size_t buffer_len, const char *stage);
+static int write_socket_logged(struct server_state *state, struct connection *c, const char *buffer, size_t buffer_len, const char *stage);
+
+static int read_request_headers(struct server_state *state, struct connection *c, char *buffer, size_t buffer_len, int *read_size, char **header_end) {
+#ifdef PRODUCTION
+    int ret = read_socket_logged(state, c, buffer, buffer_len - 1, "initial");
+    if (ret <= 0) {
+        if (SSL_get_error(c->ssl, ret) == SSL_ERROR_ZERO_RETURN) {
+            return -1;
+        }
+        return -1;
+    }
+#else
+    int ret = read_socket_logged(state, c, buffer, buffer_len - 1, "initial");
+    if (ret <= 0) {
+        return -1;
+    }
+#endif
+
+    *read_size = ret;
+    buffer[*read_size] = '\0';
+    *header_end = strstr(buffer, "\r\n\r\n");
+    while (!*header_end && *read_size < (int)buffer_len - 1) {
+        ret = read_socket_logged(state, c, buffer + *read_size, buffer_len - (size_t)*read_size - 1, "header");
+        if (ret <= 0) {
+            return -1;
+        }
+        *read_size += ret;
+        buffer[*read_size] = '\0';
+        *header_end = strstr(buffer, "\r\n\r\n");
+    }
+
+    if (!*header_end) {
+        return 1;
+    }
+    return 0;
+}
+
+static int parse_request_with_body(struct server_state *state, struct connection *c, char *buffer, size_t buffer_len, int *read_size, char *header_end, http_request_t *req, int *parse_error_status, int *request_too_large) {
+    *parse_error_status = 0;
+    *request_too_large = 0;
+
+    http_parse(buffer, (size_t)*read_size, req);
+    if (req->method == HTTP_ERR) {
+        *parse_error_status = req->status;
+        return -1;
+    }
+
+    size_t header_len = (size_t)(header_end - buffer) + 4;
+    size_t body_len_in_buffer = *read_size > (int)header_len ? (size_t)(*read_size - (int)header_len) : 0;
+    size_t max_body_bytes = state->config.max_body_bytes;
+
+    if (req->transfer_encoding_chunked) {
+        /* RFC 9112 Â§7.1: chunked transfer coding */
+        char *decoded_body = NULL;
+        size_t decoded_len = 0;
+        int decode_status = http_decode_chunked_body(buffer + header_len, body_len_in_buffer, &decoded_body, &decoded_len);
+        while (decode_status == 1 && *read_size < (int)buffer_len - 1) {
+            int ret = read_socket_logged(state, c, buffer + *read_size, buffer_len - (size_t)*read_size - 1, "chunked");
+            if (ret <= 0) {
+                break;
+            }
+            *read_size += ret;
+            buffer[*read_size] = '\0';
+            body_len_in_buffer = *read_size > (int)header_len ? (size_t)(*read_size - (int)header_len) : 0;
+            decode_status = http_decode_chunked_body(buffer + header_len, body_len_in_buffer, &decoded_body, &decoded_len);
+            if (max_body_bytes > 0 && decoded_len > max_body_bytes) {
+                *request_too_large = 1;
+                break;
+            }
+        }
+
+        if (*request_too_large) {
+            *parse_error_status = HTTP_413_PAYLOAD_TOO_LARGE;
+            free(decoded_body);
+        } else if (decode_status != 0) {
+            *parse_error_status = HTTP_400_BAD_REQUEST;
+            free(decoded_body);
+        } else if (decoded_len > INT_MAX) {
+            *parse_error_status = HTTP_400_BAD_REQUEST;
+            free(decoded_body);
+        } else if (max_body_bytes > 0 && decoded_len > max_body_bytes) {
+            *parse_error_status = HTTP_413_PAYLOAD_TOO_LARGE;
+            free(decoded_body);
+        } else {
+            req->body = decoded_body;
+            req->content_length = (int)decoded_len;
+        }
+    } else {
+        if (max_body_bytes > 0 && req->content_length > 0 &&
+            (size_t)req->content_length > max_body_bytes) {
+            *request_too_large = 1;
+        }
+        if (req->content_length > (int)(buffer_len - header_len)) {
+            *request_too_large = 1;
+        }
+
+        while (!*request_too_large && body_len_in_buffer < (size_t)req->content_length &&
+               *read_size < (int)buffer_len - 1) {
+            int ret = read_socket_logged(state, c, buffer + *read_size, buffer_len - (size_t)*read_size - 1, "body");
+            if (ret <= 0) {
+                break;
+            }
+            *read_size += ret;
+            buffer[*read_size] = '\0';
+            body_len_in_buffer = *read_size > (int)header_len ? (size_t)(*read_size - (int)header_len) : 0;
+        }
+
+        if (!*request_too_large && body_len_in_buffer < (size_t)req->content_length) {
+            *parse_error_status = HTTP_400_BAD_REQUEST;
+        }
+        if (!*request_too_large && !*parse_error_status && req->content_length > 0 &&
+            body_len_in_buffer > (size_t)req->content_length) {
+            *parse_error_status = HTTP_400_BAD_REQUEST;
+        }
+
+        if (!*request_too_large && !*parse_error_status) {
+            size_t body_len = req->content_length > 0 ? (size_t)req->content_length : body_len_in_buffer;
+            req->body = malloc(body_len + 1);
+            if (!req->body) {
+                perror("[ERROR] Failed to allocate request body");
+                return -1;
+            }
+            if (body_len > 0) {
+                memcpy(req->body, buffer + header_len, body_len);
+            }
+            req->body[body_len] = '\0';
+        }
+    }
+
+    if (!*parse_error_status) {
+        http_parse_data(req);
+    }
+
+    return 0;
+}
+
+static int init_http_response(http_response_t *res) {
+    res->headers = http_kv_create(32);
+    if (res->headers == NULL) {
+        perror("[ERROR] Error creating map");
+        return -1;
+    }
+
+    res->body = (char *)malloc(HTTP_RESPONSE_SIZE);
+    if (res->body == NULL) {
+        perror("[ERROR] Error allocating memory for response body");
+        http_kv_destroy(res->headers, 1);
+        res->headers = NULL;
+        return -1;
+    }
+
+    res->content_length = 0;
+    res->status = HTTP_200_OK;
+    res->body[0] = '\0';
+    return 0;
+}
+
+static int send_http_response(struct server_state *state, struct connection *c, http_response_t *res, size_t body_len) {
+    char headers[4*1024] = {0};
+    char response_head[4*1024] = {0};
+    build_headers(res, headers, sizeof(headers));
+    snprintf(response_head, sizeof(response_head), HTTP_VERSION" %s\r\n%sContent-Length: %zu\r\n\r\n", http_errors[res->status], headers, body_len);
+
+#ifdef PRODUCTION
+    size_t header_len = strlen(response_head);
+    if (header_len > INT_MAX) {
+        fprintf(stderr, "[ERROR] Response header too large\n");
+        return -1;
+    }
+    if (write_socket_logged(state, c, response_head, header_len, "resp_head") <= 0) {
+        perror("[ERROR] SSL write failed");
+        return -1;
+    }
+    if (body_len > INT_MAX) {
+        fprintf(stderr, "[ERROR] Response body too large\n");
+        return -1;
+    }
+    if (body_len > 0 && write_socket_logged(state, c, res->body, body_len, "resp_body") <= 0) {
+        perror("[ERROR] SSL write failed");
+        return -1;
+    }
+#else
+    if (write_socket_logged(state, c, response_head, strlen(response_head), "resp_head") <= 0) {
+        perror("[ERROR] Write failed");
+        return -1;
+    }
+    if (body_len > 0 && write_socket_logged(state, c, res->body, body_len, "resp_body") <= 0) {
+        perror("[ERROR] Write failed");
+        return -1;
+    }
+#endif
+
+    return 0;
+}
+
 static int read_socket_logged(struct server_state *state, struct connection *c, char *buffer, size_t buffer_len, const char *stage) {
     (void)stage;
     int ret;
@@ -342,7 +530,6 @@ static int write_socket_logged(struct server_state *state, struct connection *c,
 }
 
 void thread_handle_client(void *arg) {
-    int ret;
     struct client_task *task = (struct client_task *)arg;
     struct server_state *state = task->state;
     struct connection *c = task->connection;
@@ -361,39 +548,13 @@ void thread_handle_client(void *arg) {
         int close_connection = 0;
 
         char buffer[REQUEST_BUFFER_SIZE] = {0};
-#ifdef PRODUCTION
-        int read_size = read_socket_logged(state, c, buffer, sizeof(buffer) - 1, "initial");
-        if (read_size <= 0) {
-            if (SSL_get_error(c->ssl, read_size) == SSL_ERROR_ZERO_RETURN) {
-                break;
-            }
+        int read_size = 0;
+        char *header_end = NULL;
+        int header_status = read_request_headers(state, c, buffer, sizeof(buffer), &read_size, &header_end);
+        if (header_status < 0) {
             break;
         }
-#else
-        int read_size = read_socket_logged(state, c, buffer, sizeof(buffer) - 1, "initial");
-        if (read_size <= 0) {
-            break;
-        }
-#endif
-
-        buffer[read_size] = '\0';
-
-        char *header_end = strstr(buffer, "\r\n\r\n");
-        while (!header_end && read_size < (int)sizeof(buffer) - 1) {
-#ifdef PRODUCTION
-            ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "header");
-#else
-            ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "header");
-#endif
-            if (ret <= 0) {
-                break;
-            }
-            read_size += ret;
-            buffer[read_size] = '\0';
-            header_end = strstr(buffer, "\r\n\r\n");
-        }
-
-        if (!header_end) {
+        if (header_status > 0) {
             const char *body = "Bad Request: missing header terminator\n";
             dprintf(c->sockfd,
                 "HTTP/1.1 %s\r\nContent-Length: %zu\r\n\r\n%s",
@@ -408,134 +569,27 @@ void thread_handle_client(void *arg) {
         memset(&req, 0, sizeof(req));
         req.tid = pthread_self();
 
-        http_parse(buffer, (size_t)read_size, &req);
-        if (req.method == HTTP_ERR) {
-            fprintf(stderr, "[ERROR] HTTP parse failed: %s\n", http_errors[req.status]);
-            const char *body = http_errors[req.status];
-            dprintf(c->sockfd,
-                "HTTP/1.1 %s\r\nContent-Length: %zu\r\n\r\n%s",
-                http_errors[req.status], strlen(body), body);
-            thread_clean_up_request(&req);
-            goto thread_handle_client_exit;
-        }
-
-        size_t header_len = (size_t)(header_end - buffer) + 4;
-        size_t body_len_in_buffer = read_size > (int)header_len ? (size_t)(read_size - (int)header_len) : 0;
-        size_t max_body_bytes = state->config.max_body_bytes;
         int request_too_large = 0;
         int parse_error_status = 0;
-
-        if (req.transfer_encoding_chunked) {
-            /* RFC 9112 §7.1: chunked transfer coding */
-            char *decoded_body = NULL;
-            size_t decoded_len = 0;
-            int decode_status = http_decode_chunked_body(buffer + header_len, body_len_in_buffer, &decoded_body, &decoded_len);
-            while (decode_status == 1 && read_size < (int)sizeof(buffer) - 1) {
-#ifdef PRODUCTION
-                ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "chunked");
-#else
-                ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "chunked");
-#endif
-                if (ret <= 0) {
-                    break;
-                }
-                read_size += ret;
-                buffer[read_size] = '\0';
-                body_len_in_buffer = read_size > (int)header_len ? (size_t)(read_size - (int)header_len) : 0;
-                decode_status = http_decode_chunked_body(buffer + header_len, body_len_in_buffer, &decoded_body, &decoded_len);
-                if (max_body_bytes > 0 && decoded_len > max_body_bytes) {
-                    request_too_large = 1;
-                    break;
-                }
+        int parse_result = parse_request_with_body(state, c, buffer, sizeof(buffer), &read_size, header_end, &req, &parse_error_status, &request_too_large);
+        if (parse_result != 0) {
+            if (req.method == HTTP_ERR) {
+                fprintf(stderr, "[ERROR] HTTP parse failed: %s\n", http_errors[req.status]);
+                const char *body = http_errors[req.status];
+                dprintf(c->sockfd,
+                    "HTTP/1.1 %s\r\nContent-Length: %zu\r\n\r\n%s",
+                    http_errors[req.status], strlen(body), body);
             }
-
-            if (request_too_large) {
-                parse_error_status = HTTP_413_PAYLOAD_TOO_LARGE;
-                free(decoded_body);
-            } else if (decode_status != 0) {
-                parse_error_status = HTTP_400_BAD_REQUEST;
-                free(decoded_body);
-            } else if (decoded_len > INT_MAX) {
-                parse_error_status = HTTP_400_BAD_REQUEST;
-                free(decoded_body);
-            } else if (max_body_bytes > 0 && decoded_len > max_body_bytes) {
-                parse_error_status = HTTP_413_PAYLOAD_TOO_LARGE;
-                free(decoded_body);
-            } else {
-                req.body = decoded_body;
-                req.content_length = (int)decoded_len;
-            }
-        } else {
-            if (max_body_bytes > 0 && req.content_length > 0 &&
-                (size_t)req.content_length > max_body_bytes) {
-                request_too_large = 1;
-            }
-            if (req.content_length > (int)(sizeof(buffer) - header_len)) {
-                request_too_large = 1;
-            }
-
-            while (!request_too_large && body_len_in_buffer < (size_t)req.content_length &&
-                   read_size < (int)sizeof(buffer) - 1) {
-#ifdef PRODUCTION
-                ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "body");
-#else
-                ret = read_socket_logged(state, c, buffer + read_size, sizeof(buffer) - (size_t)read_size - 1, "body");
-#endif
-                if (ret <= 0) {
-                    break;
-                }
-                read_size += ret;
-                buffer[read_size] = '\0';
-                body_len_in_buffer = read_size > (int)header_len ? (size_t)(read_size - (int)header_len) : 0;
-            }
-
-            if (!request_too_large && body_len_in_buffer < (size_t)req.content_length) {
-                parse_error_status = HTTP_400_BAD_REQUEST;
-            }
-            if (!request_too_large && !parse_error_status && req.content_length > 0 &&
-                body_len_in_buffer > (size_t)req.content_length) {
-                parse_error_status = HTTP_400_BAD_REQUEST;
-            }
-
-            if (!request_too_large && !parse_error_status) {
-                size_t body_len = req.content_length > 0 ? (size_t)req.content_length : body_len_in_buffer;
-                req.body = malloc(body_len + 1);
-                if (!req.body) {
-                    perror("[ERROR] Failed to allocate request body");
-                    thread_clean_up_request(&req);
-                    goto thread_handle_client_exit;
-                }
-                if (body_len > 0) {
-                    memcpy(req.body, buffer + header_len, body_len);
-                }
-                req.body[body_len] = '\0';
-            }
-        }
-
-        if (!parse_error_status) {
-            http_parse_data(&req);
+            thread_clean_up_request(&req);
+            goto thread_handle_client_exit;
         }
         close_connection = req.close;
 
         http_response_t res;
-        res.headers = http_kv_create(32);
-        if (res.headers == NULL) {
-            perror("[ERROR] Error creating map");
+        if (init_http_response(&res) != 0) {
             thread_clean_up_request(&req);
             goto thread_handle_client_exit;
         }
-
-        res.body = (char *)malloc(HTTP_RESPONSE_SIZE);
-        if (res.body == NULL) {
-            perror("[ERROR] Error allocating memory for response body");
-            http_kv_destroy(res.headers, 1);
-            res.headers = NULL;
-            thread_clean_up_request(&req);
-            goto thread_handle_client_exit;
-        }
-        res.content_length = 0;
-        res.status = HTTP_200_OK;
-        res.body[0] = '\0';
 
         if (parse_error_status) {
             res.status = parse_error_status;
@@ -567,40 +621,10 @@ void thread_handle_client(void *arg) {
         strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &tm);
         http_kv_insert(res.headers, "Date", strdup(date));
 
-        char headers[4*1024] = {0};
-        char response_head[4*1024] = {0};
-        build_headers(&res, headers, sizeof(headers));
         size_t body_len = res.content_length > 0 ? (size_t)res.content_length : strlen(res.body);
-        snprintf(response_head, sizeof(response_head), HTTP_VERSION" %s\r\n%sContent-Length: %zu\r\n\r\n", http_errors[res.status], headers, body_len);
-
-#ifdef PRODUCTION
-        size_t header_len = strlen(response_head);
-        if (header_len > INT_MAX) {
-            fprintf(stderr, "[ERROR] Response header too large\n");
+        if (send_http_response(state, c, &res, body_len) != 0) {
             break;
         }
-        if (write_socket_logged(state, c, response_head, header_len, "resp_head") <= 0) {
-            perror("[ERROR] SSL write failed");
-            break;
-        }
-        if (body_len > INT_MAX) {
-            fprintf(stderr, "[ERROR] Response body too large\n");
-            break;
-        }
-        if (body_len > 0 && write_socket_logged(state, c, res.body, body_len, "resp_body") <= 0) {
-            perror("[ERROR] SSL write failed");
-            break;
-        }
-#else
-        if (write_socket_logged(state, c, response_head, strlen(response_head), "resp_head") <= 0) {
-            perror("[ERROR] Write failed");
-            break;
-        }
-        if (body_len > 0 && write_socket_logged(state, c, res.body, body_len, "resp_body") <= 0) {
-            perror("[ERROR] Write failed");
-            break;
-        }
-#endif
 
         double time_taken;
         measure_time(&start, &end, &time_taken);
