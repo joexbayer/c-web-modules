@@ -3,13 +3,14 @@
 
 #include <stdint.h>
 #include <pthread.h>
+#include <stddef.h>
 
 typedef enum queue_status {
     QUEUE_OK,
     QUEUE_FULL,
     QUEUE_EMPTY,
     QUEUE_ERROR
-} queue_status_t;   
+} queue_status_t;
 
 struct queue {
     void **buffer;
@@ -25,9 +26,9 @@ struct queue {
 struct queue* queue_create(size_t max_size);
 void queue_destroy(struct queue* q);
 queue_status_t queue_enqueue(struct queue* q, void* item);
+queue_status_t queue_try_enqueue(struct queue* q, void* item);
 queue_status_t queue_dequeue(struct queue* q, void** item);
+queue_status_t queue_try_dequeue(struct queue* q, void** item);
 size_t queue_size(struct queue* q);
-
-
 
 #endif // QUEUE_H

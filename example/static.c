@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <cweb.h>
 
 static int security_check(const char *path) {
@@ -24,24 +25,24 @@ static int read_file(const char *path, char *body, int size) {
     return ret;
 }
 
-static void set_content_type(struct http_response *res, const char *path) {
+static void set_content_type(http_response_t *res, const char *path) {
     char *ext = strrchr(path, '.');
     if (ext) {
         if (strcmp(ext, ".html") == 0) {
-            http_kv_insert(res->headers, "Content-Type", "text/html");
+            http_kv_insert(res->headers, "Content-Type", strdup("text/html"));
         } else if (strcmp(ext, ".css") == 0) {
-            http_kv_insert(res->headers, "Content-Type", "text/css");
+            http_kv_insert(res->headers, "Content-Type", strdup("text/css"));
         } else if (strcmp(ext, ".js") == 0) {
-            http_kv_insert(res->headers, "Content-Type", "application/javascript");
+            http_kv_insert(res->headers, "Content-Type", strdup("application/javascript"));
         } else {
-            http_kv_insert(res->headers, "Content-Type", "text/plain");
+            http_kv_insert(res->headers, "Content-Type", strdup("text/plain"));
         }
     } else {
-        http_kv_insert(res->headers, "Content-Type", "text/plain");
+        http_kv_insert(res->headers, "Content-Type", strdup("text/plain"));
     }
 }
 
-static int download(struct http_request *req, struct http_response *res) {
+static int download(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     int ret;
 
     /* Copy path */

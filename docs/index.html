@@ -11,6 +11,8 @@
     /* General Reset */
     body {
       margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
       font-family: Georgia, "Times New Roman", serif;
       background-color: #f4f4f4;
       display: flex;
@@ -22,16 +24,18 @@
     /* Container */
     .container {
       max-width: 1200px;
+      width: 100%;
+      margin: 20px auto;
       background: white;
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
       border-radius: 8px;
-      overflow: hidden;
       display: flex;
     }
 
     /* Sidebar */
     .sidebar {
       width: 250px;
+      flex: 0 0 250px;
       background-color: #343a40;
       color: white;
       display: flex;
@@ -97,6 +101,7 @@
     /* Main content */
     .content {
       flex-grow: 1;
+      min-width: 0;
       padding: 20px;
       box-sizing: border-box;
     }
@@ -118,6 +123,7 @@
       padding: 10px;
       border-radius: 5px;
       overflow-x: auto;
+      white-space: pre;
     }
 
     .content h2 {
@@ -130,10 +136,13 @@
     @media (max-width: 768px) {
       body {
         justify-content: flex-start;
+        padding: 0;
       }
 
       .container {
         flex-direction: column;
+        border-radius: 0;
+        margin: 0;
       }
 
       .menu-toggle {
@@ -184,9 +193,9 @@
       <h1>Welcome to c-web-modules Documentation</h1>
 
       <h2 id="getting-started">Getting Started</h2>
-      <p>c-web-modules is a proof-of-concept modular framework for web development in C. Inspired by kernel modules, it
-        enables dynamic runtime compilation and deployment of C code directly to the server. No precompilation is
-        required.</p>
+      <p>c-web-modules is a proof-of-concept C plugin host for compute-focused web workloads. Inspired by kernel
+        modules, it enables dynamic runtime compilation and deployment of C code directly to the server. No
+        precompilation is required.</p>
 
       <h3>Server</h3>
       <p>The c-web-modules server is a simple web server that listens on port 8080. It provides the foundation for
@@ -200,12 +209,10 @@
         server is by using <a href="#docker">Docker</a>.</p>
 
       <h3>Modules</h3>
-      <p>Modules are dynamically loaded pieces of C code that define routes and WebSocket handlers. The most important
-        part of the module is the module_t config. </p>
-      <p>For a module to be loaded into the server, the module needs to define a module_t struct with the name config.
-        Preferbaly with the `export` macro. The module_t config struct defines the
-        module name, author, routes, and WebSocket handlers. It also allows handlers to call when the module is loaded
-        and unloaded.</p>
+      <p>Modules are dynamically loaded pieces of C code that define HTTP routes and WebSocket handlers. The most
+        important part of a module is the module_t config.</p>
+      <p>For a module to be loaded into the server, it must define a module_t struct named config (preferably with the
+        `export` macro). The module_t config defines module metadata, routes, WebSocket handlers, and load/unload hooks.</p>
       <pre><code class="language-c">/* Module information */
 typedef struct module {
     char name[128];
@@ -214,17 +221,112 @@ typedef struct module {
     int size;
     websocket_info_t websockets[10];
     int ws_size;
+    job_info_t jobs[10];
+    int job_size;
     
-    void (*onload)(void);
-    void (*unload)(void);
+    void (*onload)(struct cweb_context *);
+    void (*unload)(struct cweb_context *);
 } module_t;
       </code></pre>
       <p>Check the <a href="#examples">Examples</a> section for sample modules.</p>
 
+      <h4>Code examples</h4>
+      <p>Minimal route module:</p>
+      <pre><code class="language-c">static int index_route(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
+    snprintf(res->body, HTTP_RESPONSE_SIZE, "ok");
+    res->status = HTTP_200_OK;
+    return 0;
+}
+
+export module_t config = {
+    .name = "counter",
+    .author = "cweb",
+    .routes = {
+        {"/counter", "GET", index_route, NONE},
+    },
+    .size = 1,
+};</code></pre>
+
+      <p>Minimal job module:</p>
+      <pre><code class="language-c">static int sum_job(struct cweb_context *ctx, const job_payload_t *payload, job_ctx_t *job) {
+    return job->set_result(job, "{\"ok\":true}");
+}
+
+export module_t config = {
+    .name = "job_sum",
+    .author = "cweb",
+    .job_size = 1,
+    .jobs = {
+        {"sum", sum_job},
+    },
+};</code></pre>
+
+      <p>Minimal WebSocket module:</p>
+      <pre><code class="language-c">#include &lt;string.h&gt;
+#include &lt;cweb.h&gt;
+
+static void on_open(struct cweb_context *ctx, websocket_t *ws) {
+}
+
+static void on_message(struct cweb_context *ctx, websocket_t *ws, const char *message, size_t length) {
+    ws->send(ws, message, length);
+}
+
+static void on_close(struct cweb_context *ctx, websocket_t *ws) {
+}
+
+export module_t config = {
+    .name = "websocket",
+    .author = "cweb",
+    .websockets = {
+        {"/websocket", on_open, on_message, on_close},
+    },
+    .ws_size = 1,
+};</code></pre>
+
       <p> A route is defined by a path, method, function and flags. The path needs to be unique for the server, or else
         the module will not be loaded.</p>
-      <p> Websockets are defined by a path, on_open, on_message and on_close. Websocket connections will not be closed
-        when a module is reloaded or changed. This needs to be done by the user. </p>
+      <p> WebSockets are defined by a path, on_open, on_message and on_close. Connections stay alive through module
+        reloads, and handler pointers are swapped when you deploy a new module. </p>
+
+      <h3>Job model</h3>
+      <p>c-web-modules is focused on compute + streaming:</p>
+      <ul>
+        <li>HTTP triggers jobs via server-owned /jobs endpoints.</li>
+        <li>Jobs are defined by modules, not by HTTP routes.</li>
+        <li>WebSockets stream job events with replay support.</li>
+        <li>Job status includes module_hash for provenance.</li>
+        <li>Hot-swap semantics: running jobs keep the old module; new jobs use the updated module.</li>
+      </ul>
+      <p><strong>Notice:</strong> Jobs are executed by a single scheduler worker thread. Multiple jobs can be queued, but
+        they run one at a time.</p>
+
+      <h3>Jobs system (server-level)</h3>
+      <p>The server provides a durable, SQLite-backed jobs system. Jobs deploy the same way as HTTP/WS modules (upload
+        to /mgnt). A module can define routes, WebSockets, and jobs together.</p>
+      <p>/jobs/* is a protected namespace owned by the server, and modules cannot register routes under /jobs/.</p>
+      <ul>
+        <li>POST /jobs - Trigger a job with { "module": "mod", "job": "name", "payload": { ... } }</li>
+        <li>GET /jobs/:uuid - Job status, including module_hash</li>
+        <li>POST /jobs/:uuid/cancel - Cancel a job</li>
+        <li>GET /jobs?state=running - List jobs by state</li>
+      </ul>
+      <p>WebSocket: WS /jobs/ws?id=:uuid&amp;since_event_id=456 (streams job_events with replay support).</p>
+      <h3>Authentication</h3>
+      <ul>
+        <li>Set CWEB_ADMIN_KEY to require an admin key for /mgnt, /jobs, and /jobs/ws.</li>
+        <li>Send X-API-Key: &lt;key&gt; or Authorization: Bearer &lt;key&gt;.</li>
+        <li>In DEV builds, requests from 127.0.0.1 are allowed without a key.</li>
+      </ul>
+      <p>Implemented details:</p>
+      <ul>
+        <li>Server-owned /jobs API with UUIDs, status, cancel, and list.</li>
+        <li>SQLite tables for jobs + job_events (durable state and replay).</li>
+        <li>Jobs declared in module_t.jobs[] and triggered by name.</li>
+        <li>Module hash computed from uploaded .so for provenance.</li>
+        <li>Hot-swap semantics: running jobs keep old module, new jobs use updated module.</li>
+        <li>/jobs/ws supports id + since_event_id query params.</li>
+      </ul>
 
 
       <h2 id="deployment">Deployment</h2>
@@ -243,34 +345,34 @@ typedef struct module {
        </code></pre>
 
       <h2 id="examples">Examples</h2>
+      <p>Highlighted examples in the repository:</p>
+      <ul>
+        <li><strong>job_sum.c</strong> - Jobs API example with JSON payloads.</li>
+        <li><strong>websocket.c</strong> - WebSocket echo server.</li>
+        <li><strong>chat.c</strong> - Multi-user WebSocket chat with an HTML client.</li>
+        <li><strong>static.c</strong> - Simple static file server for /static/*.</li>
+      </ul>
+      <p>Other examples: <strong>counter.c</strong>, <strong>json.c</strong>.</p>
 
-      <pre><code class="language-c">#include &lt;stdio.h&gt;
-#include &lt;cweb.h&gt;
+      <pre><code class="language-c">typedef struct job_payload {
+    const char *json;
+    size_t json_len;
+} job_payload_t;
 
-static int counter = 0;
-static const char* template = 
-    "<html>\n"
-    "  <body>\n"
-    "    <h1>Counter: %d</h1>\n"
-    "  </body>\n"
-    "</html>\n";
+typedef struct job_ctx {
+    const char *job_uuid;
+    int (*emit_event)(struct job_ctx *job, const char *type, const char *data_json);
+    int (*set_result)(struct job_ctx *job, const char *result_json);
+    int (*set_error)(struct job_ctx *job, const char *error_text);
+} job_ctx_t;
 
-/* Route: /counter - Method GET */
-static int index_route(struct http_request *req, struct http_response *res) {
-    snprintf(res->body, HTTP_RESPONSE_SIZE, template, counter++);
-    res->status = HTTP_200_OK;
-    return 0;
-}
+typedef int (*job_run_t)(struct cweb_context *ctx, const job_payload_t *payload, job_ctx_t *job);
 
-/* Define the routes for the module */
-export module_t config = {
-    .name = "counter",
-    .author = "cweb",
-    .routes = {
-        {"/counter", "GET", index_route, NONE},
-    },
-    .size = 1,
-};</code></pre>
+typedef struct job_info {
+    const char *name;
+    job_run_t run;
+    void (*cancel)(struct cweb_context *ctx, const char *job_uuid);
+} job_info_t;</code></pre>
 
       <p>For more examples, check out the following links:</p>
       <ul>
@@ -301,30 +403,33 @@ export module_t config = {
       <p>Compile and run the server:</p>
       <pre><code class="language-bash">make
 make run</code></pre>
+      <p>Server flags:</p>
+      <ul>
+        <li><code>--module-dir &lt;path&gt;</code> (or <code>-m &lt;path&gt;</code>): Store compiled modules and routes.dat in a specific directory. Defaults to modules.</li>
+        <li><code>--purge-modules</code> (or <code>-P</code>): Delete compiled .so modules on shutdown. Off by default.</li>
+      </ul>
 
       <h2 id="websockets">WebSockets</h2>
-      <p>WebSockets enable real-time communication between clients and the server. Here's an example module with
-        WebSocket handlers:</p>
+      <p>WebSockets enable real-time streaming between clients and the server. The server exposes /jobs/ws for job
+        events, and modules can also define custom WebSocket handlers.</p>
       <pre><code class="language-c">
-#include <cweb.h>
+#include &lt;cweb.h&gt;
 
-void on_open(struct websocket *ws) {
-    printf("WebSocket connection opened\n");
+static void on_open(struct cweb_context *ctx, websocket_t *ws) {
 }
 
-void on_message(struct websocket *ws, const char *message, size_t length) {
-    printf("Message received: %.*s\n", (int)length, message);
+static void on_message(struct cweb_context *ctx, websocket_t *ws, const char *message, size_t length) {
+    ws->send(ws, "{\"ok\":true}", strlen("{\"ok\":true}"));
 }
 
-void on_close(struct websocket *ws) {
-    printf("WebSocket connection closed\n");
+static void on_close(struct cweb_context *ctx, websocket_t *ws) {
 }
 
 export module_t config = {
-    .name = "websocket_example",
+    .name = "websocket",
     .author = "cweb",
     .websockets = {
-        {"/ws", on_open, on_message, on_close},
+        {"/websocket", on_open, on_message, on_close},
     },
     .ws_size = 1,
 };
@@ -350,7 +455,7 @@ export module_t config = {
       <p>The following structs are central to the framework:</p>
       <h3>HTTP Request</h3>
       <pre><code class="language-c">
-struct http_request {
+http_request_t {
     http_method_t method; // HTTP method (e.g., GET, POST)
     char *path;           // Request path
     char *body;           // Request body
@@ -361,7 +466,7 @@ struct http_request {
       </code></pre>
       <h3>HTTP Response</h3>
       <pre><code class="language-c">
-struct http_response {
+http_response_t {
     http_error_t status;  // HTTP status code
     struct map *headers;  // Response headers
     char *body;           // Response body
@@ -369,10 +474,10 @@ struct http_response {
       </code></pre>
       <h3>WebSocket</h3>
       <pre><code class="language-c">
-struct websocket {
+websocket_t {
     int client_fd;  // Client file descriptor
-    int (*send)(struct websocket* ws, const char *message, size_t length);
-    int (*close)(struct websocket* ws);
+    int (*send)(websocket_t* ws, const char *message, size_t length);
+    int (*close)(websocket_t* ws);
 };
       </code></pre>
 

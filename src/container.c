@@ -1,44 +1,67 @@
 #include <stdio.h>
 #include <container.h>
 #include <map.h>
-#include <pthread.h>
 
-/* Container functions */
-static int container_set(const char *name, void* value);
-static void* container_get(const char *name);
+int container_init(struct container *container, size_t initial_capacity) {
+    if (!container) {
+        return -1;
+    }
 
-/* Main internal container */
-static struct container internal_container = {
-    .set = container_set,
-    .get = container_get,
-    .data = NULL,
-};
-__attribute__((visibility("default"))) struct container* exposed_container = &internal_container;
-static pthread_mutex_t container_mutex = PTHREAD_MUTEX_INITIALIZER;
+    container->data = map_create(initial_capacity);
+    if (!container->data) {
+        return -1;
+    }
 
-static int container_set(const char *name, void* value) {
-    if (name == NULL || value == NULL) return -1;
-    pthread_mutex_lock(&container_mutex);
-    int result = map_insert(internal_container.data, name, value);
-    pthread_mutex_unlock(&container_mutex);
-    return result;
-}
+    if (pthread_mutex_init(&container->mutex, NULL) != 0) {
+        map_destroy(container->data);
+        container->data = NULL;
+        return -1;
+    }
 
-static void* container_get(const char *name) { 
-    /* map_get handles input validation */
-    pthread_mutex_lock(&container_mutex);
-    void* result = map_get(internal_container.data, name);
-    pthread_mutex_unlock(&container_mutex);    
-    return result;
-}
-
-__attribute__((constructor)) static void container_init() {
-    internal_container.data = map_create(32);
     printf("[STARTUP] Container initialized\n");
+    return 0;
 }
 
-__attribute__((destructor)) static void container_destroy() {
-    map_destroy(internal_container.data);
+void container_shutdown(struct container *container) {
+    if (!container) {
+        return;
+    }
+
+    pthread_mutex_destroy(&container->mutex);
+    map_destroy(container->data);
+    container->data = NULL;
     printf("[SHUTDOWN] Container destroyed\n");
 }
 
+map_error_t container_set(struct container *container, const char *name, void *value) {
+    if (!container || !name || !value) {
+        return MAP_ERR;
+    }
+
+    pthread_mutex_lock(&container->mutex);
+    map_error_t result = map_insert(container->data, name, value);
+    pthread_mutex_unlock(&container->mutex);
+    return result;
+}
+
+void *container_get(struct container *container, const char *name) {
+    if (!container || !name) {
+        return NULL;
+    }
+
+    pthread_mutex_lock(&container->mutex);
+    void *result = map_get(container->data, name);
+    pthread_mutex_unlock(&container->mutex);
+    return result;
+}
+
+map_error_t container_remove(struct container *container, const char *name) {
+    if (!container || !name) {
+        return MAP_ERR;
+    }
+
+    pthread_mutex_lock(&container->mutex);
+    map_error_t result = map_remove(container->data, name);
+    pthread_mutex_unlock(&container->mutex);
+    return result;
+}

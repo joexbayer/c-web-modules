@@ -8,22 +8,22 @@
 #include <ctype.h>
 #include <stddef.h>
 
-struct http_kv_pair {
+typedef struct http_kv_pair {
     char *key;
     char *value;
-};
+} http_kv_pair_t;
 
-struct http_kv_store {
-    struct http_kv_pair *entries;
+typedef struct http_kv_store {
+    http_kv_pair_t *entries;
     size_t size;
     size_t capacity;
-};
+} http_kv_store_t;
 
-struct http_kv_store *http_kv_create(size_t initial_capacity);
-void http_kv_destroy(struct http_kv_store *store, int free_values);
-int http_kv_insert(struct http_kv_store *store, const char *key, char *value);
-char *http_kv_get(const struct http_kv_store *store, const char *key);
-size_t http_kv_size(const struct http_kv_store *store);
+http_kv_store_t *http_kv_create(size_t initial_capacity);
+void http_kv_destroy(http_kv_store_t *store, int free_values);
+int http_kv_insert(http_kv_store_t *store, const char *key, char *value);
+char *http_kv_get(const http_kv_store_t *store, const char *key);
+size_t http_kv_size(const http_kv_store_t *store);
 
 #define HTTP_VERSION "HTTP/1.1"
 #define HTTP_RESPONSE_SIZE 8*1024 /* 8KB */
@@ -39,6 +39,7 @@ typedef enum http_method {
     HTTP_POST,
     HTTP_PUT,
     HTTP_DELETE,
+    HTTP_OPTIONS,
 } http_method_t;
 extern const char *http_methods[];
 
@@ -52,12 +53,16 @@ typedef enum http_error {
     HTTP_403_FORBIDDEN,
     HTTP_404_NOT_FOUND,
     HTTP_405_METHOD_NOT_ALLOWED,
+    HTTP_409_CONFLICT,
+    HTTP_413_PAYLOAD_TOO_LARGE,
     HTTP_414_URI_TOO_LONG,
-    HTTP_500_INTERNAL_SERVER_ERROR
+    HTTP_426_UPGRADE_REQUIRED,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+    HTTP_501_NOT_IMPLEMENTED
 } http_error_t;
 extern const char *http_errors[];
 
-struct http_request {
+typedef struct http_request {
     http_method_t method;
     http_version_t version;
     http_error_t status;
@@ -67,29 +72,32 @@ struct http_request {
     char keep_alive;
     char close;
     pthread_t tid;
-    struct http_kv_store *params;
-    struct http_kv_store *headers;
-    struct http_kv_store *data;
+    http_kv_store_t *params;
+    http_kv_store_t *headers;
+    http_kv_store_t *data;
 
     int websocket;
-};
+    int transfer_encoding_chunked;
+} http_request_t;
 
-struct http_response {
+typedef struct http_response {
     http_error_t status;
-    struct http_kv_store *headers;
+    http_kv_store_t *headers;
     char *body;
     int content_length;
-};
+} http_response_t;
 
-struct websocket {
+typedef struct websocket {
     char* session;
     int client_fd;
     int (*send)(struct websocket* ws, const char *message, size_t length);
     int (*close)(struct websocket* ws);
-};
+} websocket_t;
 
-int http_parse(const char *request, struct http_request *req);
-int http_parse_data(struct http_request *req);  
-int http_is_websocket_upgrade(struct http_request *req);
+int http_parse(const char *request, size_t request_len, http_request_t *req);
+int http_parse_data(http_request_t *req);
+int http_is_websocket_upgrade(http_request_t *req);
+/* Returns 0 on success, 1 if body is incomplete, -1 on error. */
+int http_decode_chunked_body(const char *body, size_t body_len, char **out, size_t *out_len);
 
 #endif // HTTP_H

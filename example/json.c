@@ -34,25 +34,25 @@ static void serialize_list(char *buffer, size_t buffer_size) {
 }
 
 /* Route: /list - Method GET */
-int get_list_route(struct http_request *req, struct http_response *res) {
+int get_list_route(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     char json_response[1024];
     serialize_list(json_response, sizeof(json_response));
 
     /* HTTP response */
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", json_response);
-    http_kv_insert(res->headers, "Content-Type", "application/json");
+    http_kv_insert(res->headers, "Content-Type", strdup("application/json"));
     res->status = HTTP_200_OK;
     return 0;
 }
 
 /* Route: /json/add - Method POST */
-int add_item_route(struct http_request *req, struct http_response *res) {
+int add_item_route(struct cweb_context *ctx, http_request_t *req, http_response_t *res) {
     if (list_count >= MAX_ITEMS) {
         json_t *error = json_pack("{s:s}", "error", "List is full");
         
         char *error_json = json_dumps(error, JSON_COMPACT);
         snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", error_json);
-        http_kv_insert(res->headers, "Content-Type", "application/json");
+        http_kv_insert(res->headers, "Content-Type", strdup("application/json"));
         
         free(error_json);
         json_decref(error);
@@ -68,7 +68,7 @@ int add_item_route(struct http_request *req, struct http_response *res) {
     json_t *message = json_pack("{s:s}", "message", "Item added");
     char *message_json = json_dumps(message, JSON_COMPACT);
     snprintf(res->body, HTTP_RESPONSE_SIZE, "%s", message_json);
-    http_kv_insert(res->headers, "Content-Type", "application/json");
+    http_kv_insert(res->headers, "Content-Type", strdup("application/json"));
     
     free(message_json);
     json_decref(message);
@@ -76,7 +76,7 @@ int add_item_route(struct http_request *req, struct http_response *res) {
     return 0;
 }
 
-void unload() {
+void unload(struct cweb_context *ctx) {
     printf("Unloading json_example_jansson %d\n", list_count);
     for (int i = 0; i < list_count; i++) {
         free((void*)list[i]);
